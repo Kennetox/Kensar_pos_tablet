@@ -74,6 +74,7 @@ export function SalesHistoryScreen({
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<SaleRead[]>([]);
   const [total, setTotal] = useState(0);
+  const [bogotaTimeLabel, setBogotaTimeLabel] = useState('');
 
   const resolvePaymentMethodName = useCallback(
     (method?: string | null) => {
@@ -114,6 +115,24 @@ export function SalesHistoryScreen({
     loadSalesHistory().catch(() => undefined);
   }, [loadSalesHistory]);
 
+  useEffect(() => {
+    const updateTime = () => {
+      const now = new Date();
+      setBogotaTimeLabel(
+        now.toLocaleTimeString('es-CO', {
+          hour: 'numeric',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true,
+          timeZone: 'America/Bogota',
+        }),
+      );
+    };
+    updateTime();
+    const interval = setInterval(updateTime, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom', 'left', 'right']}>
       <View
@@ -130,6 +149,7 @@ export function SalesHistoryScreen({
             <Text style={styles.kicker}>Historial de hoy</Text>
             <Text style={styles.title}>Ventas del día</Text>
             <Text style={styles.meta}>Fecha {todayKey} · Incluye ventas de la tablet y estación principal</Text>
+            <Text style={styles.meta}>Hora {bogotaTimeLabel || '--:--:--'} (Bogotá)</Text>
             <Text style={styles.meta}>Mostrando {items.length} de {total}</Text>
           </View>
           <View style={styles.headerActions}>

@@ -4,11 +4,14 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
+  FlatList,
   Image,
   Keyboard,
   KeyboardAvoidingView,
   LayoutChangeEvent,
   Linking,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   PanResponder,
   Platform,
   Pressable,
@@ -383,9 +386,6 @@ export function HomeScreen() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [currentPath, setCurrentPath] = useState<Path>([]);
   const [currentPage, setCurrentPage] = useState(1);
-  const [swipePreviewPage, setSwipePreviewPage] = useState<number | null>(null);
-  const [swipeDirection, setSwipeDirection] = useState<-1 | 0 | 1>(0);
-  const [isCatalogPageAnimating, setIsCatalogPageAnimating] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -462,10 +462,8 @@ export function HomeScreen() {
   const [reservedSaleNumber, setReservedSaleNumber] = useState<number | null>(null);
   const slideAnim = useRef(new Animated.Value(0)).current;
   const toastAnim = useRef(new Animated.Value(0)).current;
-  const pageSwipeTranslateX = useRef(new Animated.Value(0)).current;
-  const previewOffsetX = useRef(new Animated.Value(0)).current;
-  const swipePreviewPageRef = useRef<number | null>(null);
-  const swipeDirectionRef = useRef<-1 | 0 | 1>(0);
+  const catalogPagerRef = useRef<FlatList<GridTile[]> | null>(null);
+  const isCatalogPagerProgrammaticRef = useRef(false);
   const scannerCooldownRef = useRef(0);
   const catalogVersionRef = useRef<string | null>(null);
   const catalogUpdateAvailableRef = useRef(false);
@@ -1149,21 +1147,19 @@ export function HomeScreen() {
   const totalPages = Math.max(1, Math.ceil(tiles.length / PAGE_SIZE));
   const shouldPaginate = currentPath.length > 0 || search.trim().length > 0;
   const safePage = shouldPaginate ? Math.min(currentPage, totalPages) : 1;
-  const canSwipePages = shouldPaginate && totalPages > 1;
   const catalogPageWidth = Math.max(320, catalogViewport.width - 24);
-
-  const getPageTiles = useCallback(
-    (page: number) => (shouldPaginate ? tiles.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) : tiles),
-    [shouldPaginate, tiles],
+  const pagedTiles = useMemo(
+    () =>
+      shouldPaginate
+        ? Array.from({ length: totalPages }, (_, index) =>
+            tiles.slice(index * PAGE_SIZE, (index + 1) * PAGE_SIZE),
+          )
+        : [tiles],
+    [shouldPaginate, tiles, totalPages],
   );
-
   const pageTiles = useMemo(
-    () => getPageTiles(safePage),
-    [getPageTiles, safePage],
-  );
-  const swipePreviewTiles = useMemo(
-    () => (swipePreviewPage ? getPageTiles(swipePreviewPage) : []),
-    [getPageTiles, swipePreviewPage],
+    () => (shouldPaginate ? pagedTiles[safePage - 1] ?? [] : tiles),
+    [pagedTiles, safePage, shouldPaginate, tiles],
   );
 
   const handleCatalogLayout = useCallback((event: LayoutChangeEvent) => {
@@ -1231,150 +1227,51 @@ export function HomeScreen() {
       tilePadding,
     };
   }, [catalogViewport.height, catalogViewport.width, gridZoom]);
-
-  const clearCatalogSwipePreview = useCallback(() => {
-    swipePreviewPageRef.current = null;
-    swipeDirectionRef.current = 0;
-    setSwipePreviewPage(null);
-    setSwipeDirection(0);
-  }, []);
-
-  const setCatalogSwipePreview = useCallback(
-    (nextPage: number, direction: -1 | 1) => {
-      if (swipePreviewPageRef.current !== nextPage) {
-        swipePreviewPageRef.current = nextPage;
-        setSwipePreviewPage(nextPage);
-      }
-      if (swipeDirectionRef.current !== direction) {
-        swipeDirectionRef.current = direction;
-        setSwipeDirection(direction);
-        previewOffsetX.setValue(direction === -1 ? catalogPageWidth : -catalogPageWidth);
-      }
-    },
-    [catalogPageWidth, previewOffsetX],
-  );
-
-  const settleCatalogSwipe = useCallback(() => {
-    Animated.spring(pageSwipeTranslateX, {
-      toValue: 0,
-      useNativeDriver: true,
-      speed: 20,
-      bounciness: 0,
-    }).start(() => {
-      clearCatalogSwipePreview();
-    });
-  }, [clearCatalogSwipePreview, pageSwipeTranslateX]);
-
-  const animateToCatalogPage = useCallback(
-    (targetPage: number, direction: -1 | 1) => {
-      if (targetPage < 1 || targetPage > totalPages || isCatalogPageAnimating) {
+  const goToCatalogPage = useCallback(
+    (targetPage: number, animated = true) => {
+      if (!shouldPaginate) {
         return;
       }
-      setCatalogSwipePreview(targetPage, direction);
-      setIsCatalogPageAnimating(true);
-      Animated.timing(pageSwipeTranslateX, {
-        toValue: direction === -1 ? -catalogPageWidth : catalogPageWidth,
-        duration: 220,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished) {
-          setCurrentPage(targetPage);
-        }
-        pageSwipeTranslateX.setValue(0);
-        clearCatalogSwipePreview();
-        setIsCatalogPageAnimating(false);
+      const nextPage = Math.max(1, Math.min(totalPages, targetPage));
+      setCurrentPage(nextPage);
+      const list = catalogPagerRef.current;
+      if (!list) {
+        return;
+      }
+      isCatalogPagerProgrammaticRef.current = true;
+      requestAnimationFrame(() => {
+        list.scrollToIndex({ index: nextPage - 1, animated });
       });
     },
-    [
-      catalogPageWidth,
-      clearCatalogSwipePreview,
-      isCatalogPageAnimating,
-      pageSwipeTranslateX,
-      setCatalogSwipePreview,
-      totalPages,
-    ],
+    [shouldPaginate, totalPages],
   );
 
-  const catalogSwipePanResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onPanResponderGrant: () => {
-          // Ensure no residual offset from an interrupted gesture/animation.
-          pageSwipeTranslateX.stopAnimation((value) => {
-            if (Math.abs(value) > 0.5) {
-              pageSwipeTranslateX.setValue(0);
-            }
-          });
-        },
-        onStartShouldSetPanResponder: () => false,
-        onMoveShouldSetPanResponder: (_, gestureState) => {
-          if (!canSwipePages || isCatalogPageAnimating) {
-            return false;
-          }
-          const absDx = Math.abs(gestureState.dx);
-          const absDy = Math.abs(gestureState.dy);
-          return absDx > 14 && absDx > absDy * 1.25;
-        },
-        onPanResponderMove: (_, gestureState) => {
-          if (!canSwipePages || isCatalogPageAnimating) {
-            return;
-          }
-          const rawDx = gestureState.dx;
-          const clampedDx = Math.max(-catalogPageWidth * 0.9, Math.min(catalogPageWidth * 0.9, rawDx));
-          const direction: -1 | 1 = rawDx < 0 ? -1 : 1;
-          const targetPage = direction === -1 ? safePage + 1 : safePage - 1;
-          const hasTarget = targetPage >= 1 && targetPage <= totalPages;
+  const handleCatalogPagerMomentumEnd = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (!shouldPaginate) {
+        return;
+      }
+      const width = event.nativeEvent.layoutMeasurement.width;
+      if (width <= 0) {
+        return;
+      }
+      const page = Math.max(1, Math.min(totalPages, Math.round(event.nativeEvent.contentOffset.x / width) + 1));
+      setCurrentPage(page);
+      isCatalogPagerProgrammaticRef.current = false;
+    },
+    [shouldPaginate, totalPages],
+  );
 
-          if (!hasTarget) {
-            pageSwipeTranslateX.setValue(clampedDx * 0.2);
-            clearCatalogSwipePreview();
-            return;
-          }
-
-          setCatalogSwipePreview(targetPage, direction);
-          pageSwipeTranslateX.setValue(clampedDx);
-        },
-        onPanResponderRelease: (_, gestureState) => {
-          if (!canSwipePages || isCatalogPageAnimating) {
-            return;
-          }
-          const direction: -1 | 1 = gestureState.dx < 0 ? -1 : 1;
-          const targetPage = direction === -1 ? safePage + 1 : safePage - 1;
-          const hasTarget = targetPage >= 1 && targetPage <= totalPages;
-          const distanceThreshold = Math.max(74, Math.min(180, catalogPageWidth * 0.2));
-          const velocityThreshold = 0.45;
-          const shouldComplete =
-            hasTarget &&
-            (Math.abs(gestureState.dx) > distanceThreshold || Math.abs(gestureState.vx) > velocityThreshold);
-
-          if (shouldComplete) {
-            animateToCatalogPage(targetPage, direction);
-            return;
-          }
-          settleCatalogSwipe();
-        },
-        onPanResponderEnd: () => {
-          if (!isCatalogPageAnimating) {
-            settleCatalogSwipe();
-          }
-        },
-        onPanResponderTerminate: () => {
-          settleCatalogSwipe();
-        },
-      }),
-    [
-      animateToCatalogPage,
-      canSwipePages,
-      catalogPageWidth,
-      clearCatalogSwipePreview,
-      isCatalogPageAnimating,
-      pageSwipeTranslateX,
-      safePage,
-      setCatalogSwipePreview,
-      settleCatalogSwipe,
-      totalPages,
-    ],
+  const handleCatalogPagerScrollToIndexFailed = useCallback(
+    (info: { averageItemLength: number; index: number }) => {
+      const list = catalogPagerRef.current;
+      if (!list) {
+        return;
+      }
+      const estimatedOffset = info.averageItemLength > 0 ? info.averageItemLength * info.index : catalogPageWidth * info.index;
+      list.scrollToOffset({ offset: estimatedOffset, animated: false });
+    },
+    [catalogPageWidth],
   );
 
   const dividerPanResponder = useMemo(
@@ -1420,34 +1317,23 @@ export function HomeScreen() {
 
   useEffect(() => {
     setCurrentPage(1);
-    pageSwipeTranslateX.setValue(0);
-    clearCatalogSwipePreview();
-    setIsCatalogPageAnimating(false);
-  }, [clearCatalogSwipePreview, currentPath, pageSwipeTranslateX, search]);
+  }, [currentPath, search]);
 
   useEffect(() => {
-    if (swipePreviewPage == null) {
+    if (!shouldPaginate) {
       return;
     }
-    if (swipePreviewPage >= 1 && swipePreviewPage <= totalPages) {
+    const list = catalogPagerRef.current;
+    if (!list) {
       return;
     }
-    pageSwipeTranslateX.setValue(0);
-    clearCatalogSwipePreview();
-    setIsCatalogPageAnimating(false);
-  }, [clearCatalogSwipePreview, pageSwipeTranslateX, swipePreviewPage, totalPages]);
-
-  useEffect(() => {
-    if (isCatalogPageAnimating || swipePreviewPage != null || swipeDirection !== 0) {
+    if (isCatalogPagerProgrammaticRef.current) {
       return;
     }
-    // Final safety net: keep active page anchored in viewport.
-    pageSwipeTranslateX.stopAnimation((value) => {
-      if (Math.abs(value) > 0.5) {
-        pageSwipeTranslateX.setValue(0);
-      }
+    requestAnimationFrame(() => {
+      list.scrollToIndex({ index: safePage - 1, animated: false });
     });
-  }, [isCatalogPageAnimating, pageSwipeTranslateX, swipeDirection, swipePreviewPage]);
+  }, [safePage, shouldPaginate]);
 
   const userInitials = useMemo(() => {
     const name = user?.name?.trim();
@@ -1910,6 +1796,32 @@ export function HomeScreen() {
 
     setDiscountModalOpen(false);
   }, [discountInput, discountMode, discountScope, selectedCartItem]);
+
+  const handleClearDiscount = useCallback(() => {
+    if (discountScope === 'item') {
+      if (!selectedCartItem) {
+        setDiscountModalOpen(false);
+        return;
+      }
+      setCart((prev) =>
+        prev.map((item) =>
+          item.id === selectedCartItem.id
+            ? {
+                ...item,
+                lineDiscountValue: 0,
+                lineDiscountIsPercent: false,
+                lineDiscountPercent: 0,
+              }
+            : item,
+        ),
+      );
+    } else {
+      setCartDiscountValue(0);
+      setCartDiscountPercent(0);
+    }
+    setDiscountInput('');
+    setDiscountModalOpen(false);
+  }, [discountScope, selectedCartItem]);
 
   const handleOpenSurchargeModal = useCallback(() => {
     if (cartSurcharge.enabled) {
@@ -3143,44 +3055,43 @@ export function HomeScreen() {
               ) : null}
 
               {!error ? (
-                <View
-                  style={styles.tilePagerViewport}
-                  {...(canSwipePages ? catalogSwipePanResponder.panHandlers : {})}
-                >
-                  <Animated.View
-                    style={[
-                      styles.tilePagerPage,
-                      {
-                        transform: [{ translateX: pageSwipeTranslateX }],
-                      },
-                    ]}
-                  >
-                    <View style={styles.tileGrid}>
-                      {pageTiles.map(renderCatalogTile)}
-                      {!isLoading && pageTiles.length === 0 ? (
-                        <View style={styles.stateCard}>
-                          <Text style={styles.stateTitle}>No hay elementos para mostrar</Text>
-                          <Text style={styles.stateBody}>Prueba otra búsqueda o vuelve al inicio.</Text>
+                <View style={styles.tilePagerViewport}>
+                  {shouldPaginate ? (
+                    <FlatList
+                      ref={catalogPagerRef}
+                      data={pagedTiles}
+                      keyExtractor={(_, index) => `catalog-page-${index}`}
+                      horizontal
+                      pagingEnabled
+                      showsHorizontalScrollIndicator={false}
+                      bounces={false}
+                      nestedScrollEnabled
+                      scrollEventThrottle={16}
+                      initialNumToRender={2}
+                      maxToRenderPerBatch={2}
+                      windowSize={3}
+                      extraData={[gridMetrics.tileWidth, gridMetrics.tileHeight, gridZoom]}
+                      onMomentumScrollEnd={handleCatalogPagerMomentumEnd}
+                      onScrollToIndexFailed={handleCatalogPagerScrollToIndexFailed}
+                      renderItem={({ item }) => (
+                        <View style={[styles.tilePagerPage, { width: catalogPageWidth }]}>
+                          <View style={styles.tileGrid}>
+                            {item.map(renderCatalogTile)}
+                          </View>
                         </View>
-                      ) : null}
+                      )}
+                    />
+                  ) : (
+                    <View style={styles.tileGrid}>
+                      {tiles.map(renderCatalogTile)}
                     </View>
-                  </Animated.View>
+                  )}
 
-                  {swipePreviewPage && swipeDirection !== 0 ? (
-                    <Animated.View
-                      pointerEvents="none"
-                      style={[
-                        styles.tilePagerPage,
-                        styles.tilePagerPageAbsolute,
-                        {
-                          transform: [{ translateX: Animated.add(pageSwipeTranslateX, previewOffsetX) }],
-                        },
-                      ]}
-                    >
-                      <View style={styles.tileGrid}>
-                        {swipePreviewTiles.map(renderCatalogTile)}
-                      </View>
-                    </Animated.View>
+                  {!isLoading && pageTiles.length === 0 ? (
+                    <View style={styles.stateCard}>
+                      <Text style={styles.stateTitle}>No hay elementos para mostrar</Text>
+                      <Text style={styles.stateBody}>Prueba otra búsqueda o vuelve al inicio.</Text>
+                    </View>
                   ) : null}
                 </View>
               ) : null}
@@ -3204,7 +3115,7 @@ export function HomeScreen() {
                       style={[styles.zoomButton, safePage <= 1 ? styles.zoomButtonDisabled : null]}
                       disabled={safePage <= 1}
                       onPress={() => {
-                        animateToCatalogPage(Math.max(1, safePage - 1), 1);
+                        goToCatalogPage(Math.max(1, safePage - 1));
                       }}
                     >
                       <Text style={styles.zoomButtonText}>‹</Text>
@@ -3213,7 +3124,7 @@ export function HomeScreen() {
                       style={[styles.zoomButton, safePage >= totalPages ? styles.zoomButtonDisabled : null]}
                       disabled={safePage >= totalPages}
                       onPress={() => {
-                        animateToCatalogPage(Math.min(totalPages, safePage + 1), -1);
+                        goToCatalogPage(Math.min(totalPages, safePage + 1));
                       }}
                     >
                       <Text style={styles.zoomButtonText}>›</Text>
@@ -3692,6 +3603,9 @@ export function HomeScreen() {
                 <View style={[styles.quantityActions, modalCompact ? styles.quantityActionsCompact : null]}>
                   <Pressable style={styles.quantityCancel} onPress={() => setDiscountModalOpen(false)}>
                     <Text style={styles.quantityCancelText}>Cancelar</Text>
+                  </Pressable>
+                  <Pressable style={styles.quantityCancel} onPress={handleClearDiscount}>
+                    <Text style={styles.quantityCancelText}>Quitar</Text>
                   </Pressable>
                   <Pressable style={styles.quantityApply} onPress={handleApplyDiscount}>
                     <Text style={styles.quantityApplyText}>Aplicar</Text>
