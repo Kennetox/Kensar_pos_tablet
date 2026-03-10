@@ -331,7 +331,12 @@ function DismissKeyboardOverlay({
   children: React.ReactNode;
 }) {
   const safeKeyboardHeight = Math.max(0, keyboardHeight ?? 0);
-  const overlayBottomPad = safeKeyboardHeight > 0 ? safeKeyboardHeight + 16 : 18;
+  const overlayBottomPad =
+    Platform.OS === 'ios' && safeKeyboardHeight > 0 ? Math.min(safeKeyboardHeight, 260) + 12 : 18;
+  const overlayLift =
+    Platform.OS === 'android' && safeKeyboardHeight > 0
+      ? Math.min(Math.max(safeKeyboardHeight - 140, 0), 180)
+      : 0;
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
@@ -344,7 +349,8 @@ function DismissKeyboardOverlay({
           <View
             style={[
               styles.quantityOverlayContent,
-              safeKeyboardHeight > 0 ? styles.quantityOverlayContentKeyboard : null,
+              safeKeyboardHeight > 0 && Platform.OS === 'ios' ? styles.quantityOverlayContentKeyboard : null,
+              overlayLift > 0 ? { transform: [{ translateY: -overlayLift }] } : null,
             ]}
           >
             {children}
@@ -357,9 +363,9 @@ function DismissKeyboardOverlay({
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const modalKeyboardBehavior = Platform.OS === 'ios' ? 'padding' : 'position';
+  const modalKeyboardBehavior = Platform.OS === 'ios' ? 'padding' : 'height';
   const modalKeyboardOffset = Platform.OS === 'ios' ? 24 : 0;
-  const freeSaleModalKeyboardBehavior: 'height' | 'padding' | 'position' = Platform.OS === 'ios' ? 'padding' : 'position';
+  const freeSaleModalKeyboardBehavior: 'height' | 'padding' | 'position' = Platform.OS === 'ios' ? 'padding' : 'height';
   const freeSaleModalKeyboardOffset = Platform.OS === 'ios' ? 24 : 0;
   const {
     user,
@@ -5310,8 +5316,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   quantityOverlayContentKeyboard: {
-    justifyContent: 'flex-start',
-    paddingTop: 18,
+    paddingTop: 8,
   },
   quantityCard: {
     width: '92%',
