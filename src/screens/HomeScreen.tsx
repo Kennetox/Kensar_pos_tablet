@@ -333,10 +333,6 @@ function DismissKeyboardOverlay({
   const safeKeyboardHeight = Math.max(0, keyboardHeight ?? 0);
   const overlayBottomPad =
     Platform.OS === 'ios' && safeKeyboardHeight > 0 ? Math.min(safeKeyboardHeight, 260) + 12 : 18;
-  const overlayLift =
-    Platform.OS === 'android' && safeKeyboardHeight > 0
-      ? Math.min(Math.max(safeKeyboardHeight - 140, 0), 180)
-      : 0;
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
@@ -350,7 +346,6 @@ function DismissKeyboardOverlay({
             style={[
               styles.quantityOverlayContent,
               safeKeyboardHeight > 0 && Platform.OS === 'ios' ? styles.quantityOverlayContentKeyboard : null,
-              overlayLift > 0 ? { transform: [{ translateY: -overlayLift }] } : null,
             ]}
           >
             {children}
@@ -5319,8 +5314,8 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   quantityCard: {
-    width: '92%',
-    maxWidth: 980,
+    width: '100%',
+    maxWidth: 700,
     maxHeight: '100%',
     borderRadius: 28,
     borderWidth: 1,
@@ -5331,13 +5326,13 @@ const styles = StyleSheet.create({
     paddingBottom: 22,
   },
   discountCard: {
-    maxWidth: 1080,
+    maxWidth: 760,
     paddingHorizontal: 28,
     paddingTop: 22,
     paddingBottom: 24,
   },
   discountCardCompact: {
-    maxWidth: 980,
+    maxWidth: 720,
     paddingHorizontal: 24,
     paddingTop: 16,
     paddingBottom: 18,
@@ -5552,8 +5547,8 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   surchargeCard: {
-    width: '92%',
-    maxWidth: 1060,
+    width: '100%',
+    maxWidth: 780,
     maxHeight: '100%',
     borderRadius: 28,
     borderWidth: 1,
