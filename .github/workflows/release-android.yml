@@ -34,9 +34,33 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Decode Android release keystore
+      - name: Decode and validate Android release keystore
+        env:
+          METRIK_UPLOAD_KEYSTORE_BASE64: ${{ secrets.METRIK_UPLOAD_KEYSTORE_BASE64 }}
+          METRIK_UPLOAD_STORE_PASSWORD: ${{ secrets.METRIK_UPLOAD_STORE_PASSWORD }}
+          METRIK_UPLOAD_KEY_ALIAS: ${{ secrets.METRIK_UPLOAD_KEY_ALIAS }}
         run: |
-          echo "${{ secrets.METRIK_UPLOAD_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
+          python - <<'PY'
+          import base64
+          import os
+          import re
+          from pathlib import Path
+
+          encoded = os.environ.get("METRIK_UPLOAD_KEYSTORE_BASE64", "")
+          cleaned = re.sub(r"\s+", "", encoded)
+          if not cleaned:
+              raise SystemExit("METRIK_UPLOAD_KEYSTORE_BASE64 is empty.")
+
+          decoded = base64.b64decode(cleaned, validate=True)
+          out_path = Path("android/app/upload-keystore.jks")
+          out_path.write_bytes(decoded)
+          print(f"Keystore decoded: {out_path} ({out_path.stat().st_size} bytes)")
+          PY
+
+          keytool -list \
+            -keystore android/app/upload-keystore.jks \
+            -storepass "${METRIK_UPLOAD_STORE_PASSWORD}" \
+            -alias "${METRIK_UPLOAD_KEY_ALIAS}" >/dev/null
 
       - name: Build signed release APK
         run: |

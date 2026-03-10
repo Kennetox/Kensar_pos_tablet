@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 
 import { logoutSession, posStationLogin, tabletLogin } from '../services/api/auth';
@@ -54,6 +54,7 @@ type PersistedSession = {
   parentStationLabel?: string;
   tabletEmail?: string;
   token?: string | null;
+  tokenIssuedAt?: number | null;
   user?: AuthUser | null;
   deviceId?: string;
   deviceLabel?: string;
@@ -62,6 +63,8 @@ type PersistedSession = {
 const DEFAULT_API_BASE_PROD = 'https://api.metrikpos.com';
 const DEFAULT_API_BASE_DEV = 'http://10.0.2.2:8000';
 const STORAGE_KEY = '@kensar_pos_tablet/session_v1';
+const APP_BACKGROUND_KEY = '@kensar_pos_tablet/app_background_v1';
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 const AppSessionContext = createContext<AppSessionValue | null>(null);
 
@@ -96,6 +99,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   const [parentStationLabel, setParentStationLabel] = useState('');
   const [tabletEmail, setTabletEmail] = useState('');
   const [token, setToken] = useState<string | null>(null);
+  const [tokenIssuedAt, setTokenIssuedAt] = useState<number | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('checking');
   const [syncReason, setSyncReason] = useState<string | null>(null);
@@ -103,10 +107,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   const [lastSyncCheckAt, setLastSyncCheckAt] = useState<number | null>(null);
   const [deviceId, setDeviceId] = useState('');
   const [deviceLabel, setDeviceLabel] = useState(buildDefaultDeviceLabel());
-  const lifecycleLogoutInFlightRef = useRef(false);
 
   const clearSession = useCallback(() => {
     setToken(null);
+    setTokenIssuedAt(null);
     setUser(null);
   }, []);
 
@@ -115,7 +119,10 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
 
     (async () => {
       try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        const [raw, backgroundState] = await Promise.all([
+          AsyncStorage.getItem(STORAGE_KEY),
+          AsyncStorage.getItem(APP_BACKGROUND_KEY),
+        ]);
         if (!active) {
           return;
         }
@@ -128,8 +135,16 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         setParentStationId(persisted?.parentStationId || '');
         setParentStationLabel(persisted?.parentStationLabel || '');
         setTabletEmail(persisted?.tabletEmail || '');
-        setToken(persisted?.token ?? null);
-        setUser(persisted?.user ?? null);
+        const persistedToken = persisted?.token ?? null;
+        const persistedTokenIssuedAt = persisted?.tokenIssuedAt ?? null;
+        const isPersistedSessionExpired =
+          Boolean(persistedToken) &&
+          (!persistedTokenIssuedAt || Date.now() - persistedTokenIssuedAt >= SESSION_MAX_AGE_MS);
+        const shouldResetByColdStart = backgroundState === '1';
+        const shouldClearSession = isPersistedSessionExpired || shouldResetByColdStart;
+        setToken(shouldClearSession ? null : persistedToken);
+        setTokenIssuedAt(shouldClearSession ? null : persistedTokenIssuedAt);
+        setUser(shouldClearSession ? null : (persisted?.user ?? null));
         setDeviceId(persisted?.deviceId || generateDeviceId());
         setDeviceLabel(persisted?.deviceLabel || buildDefaultDeviceLabel());
       } catch {
@@ -139,6 +154,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       } finally {
         if (active) {
           setIsHydrated(true);
+          AsyncStorage.setItem(APP_BACKGROUND_KEY, '0').catch(() => undefined);
         }
       }
     })();
@@ -162,6 +178,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       parentStationLabel,
       tabletEmail,
       token,
+      tokenIssuedAt,
       user,
       deviceId,
       deviceLabel,
@@ -180,6 +197,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     parentStationLabel,
     tabletEmail,
     token,
+    tokenIssuedAt,
     user,
   ]);
 
@@ -222,6 +240,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       setParentStationLabel(response.parent_station_label?.trim() ?? '');
       setTabletEmail(response.station_email);
       setToken(null);
+      setTokenIssuedAt(null);
       setUser(null);
     },
     [apiClient, deviceId, deviceLabel],
@@ -235,6 +254,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     setParentStationLabel('');
     setTabletEmail('');
     setToken(null);
+    setTokenIssuedAt(null);
     setUser(null);
   }, []);
 
@@ -260,6 +280,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       }
 
       setToken(authToken);
+      setTokenIssuedAt(Date.now());
       setUser(
         payload.user ?? {
           id: 0,
@@ -287,34 +308,27 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       });
   }, [apiClient, clearSession, token]);
 
-  const logoutOnAppBackground = useCallback(() => {
-    if (!token || lifecycleLogoutInFlightRef.current) {
-      return;
-    }
-    lifecycleLogoutInFlightRef.current = true;
-    const tokenSnapshot = token;
-    const closeClient = createApiClient({
-      getBaseUrl: () => apiBase,
-      getToken: () => tokenSnapshot,
-    });
-    logoutSession(closeClient)
-      .catch(() => undefined)
-      .finally(() => {
-        clearSession();
-        lifecycleLogoutInFlightRef.current = false;
-      });
-  }, [apiBase, clearSession, token]);
-
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'background') {
-        logoutOnAppBackground();
+      if (state === 'active') {
+        AsyncStorage.setItem(APP_BACKGROUND_KEY, '0').catch(() => undefined);
+      } else if (state === 'background') {
+        AsyncStorage.setItem(APP_BACKGROUND_KEY, '1').catch(() => undefined);
       }
     });
     return () => {
       subscription.remove();
     };
-  }, [logoutOnAppBackground]);
+  }, []);
+
+  useEffect(() => {
+    if (!token || !tokenIssuedAt) {
+      return;
+    }
+    if (Date.now() - tokenIssuedAt >= SESSION_MAX_AGE_MS) {
+      clearSession();
+    }
+  }, [clearSession, token, tokenIssuedAt]);
 
   const refreshSyncStatus = useCallback(async () => {
     if (!token) {
