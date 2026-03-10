@@ -134,10 +134,10 @@ const QUICK_ACTIONS = [
 
 const PAGE_SIZE = 16;
 const CUSTOMER_PAGE_SIZE = 12;
-const DEFAULT_CART_WIDTH = 328;
+const DEFAULT_CART_WIDTH = 460;
 const MIN_CART_WIDTH = 280;
 const MAX_CART_WIDTH = 460;
-const DEFAULT_GRID_ZOOM = 0.82;
+const DEFAULT_GRID_ZOOM = 1;
 const MIN_GRID_ZOOM = 0.68;
 const MAX_GRID_ZOOM = 1;
 const REQUIRE_FREE_SALE_REASON = true;
@@ -322,21 +322,33 @@ function getPaymentBlockedReason(params: {
 function DismissKeyboardOverlay({
   behavior,
   keyboardVerticalOffset,
+  keyboardHeight,
   children,
 }: {
   behavior: 'height' | 'padding' | 'position';
   keyboardVerticalOffset: number;
+  keyboardHeight?: number;
   children: React.ReactNode;
 }) {
+  const safeKeyboardHeight = Math.max(0, keyboardHeight ?? 0);
+  const overlayBottomPad = safeKeyboardHeight > 0 ? safeKeyboardHeight + 16 : 18;
+
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
       <KeyboardAvoidingView
-        style={styles.quantityOverlay}
+        style={[styles.quantityOverlay, { paddingBottom: overlayBottomPad }]}
         behavior={behavior}
         keyboardVerticalOffset={keyboardVerticalOffset}
       >
         <TouchableWithoutFeedback onPress={() => undefined} accessible={false}>
-          <View style={styles.quantityOverlayContent}>{children}</View>
+          <View
+            style={[
+              styles.quantityOverlayContent,
+              safeKeyboardHeight > 0 ? styles.quantityOverlayContentKeyboard : null,
+            ]}
+          >
+            {children}
+          </View>
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </TouchableWithoutFeedback>
@@ -345,10 +357,10 @@ function DismissKeyboardOverlay({
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const modalKeyboardBehavior = Platform.OS === 'ios' ? 'padding' : 'height';
+  const modalKeyboardBehavior = Platform.OS === 'ios' ? 'padding' : 'position';
   const modalKeyboardOffset = Platform.OS === 'ios' ? 24 : 0;
-  const freeSaleModalKeyboardBehavior: 'height' | 'padding' | 'position' = 'padding';
-  const freeSaleModalKeyboardOffset = Platform.OS === 'ios' ? 24 : 8;
+  const freeSaleModalKeyboardBehavior: 'height' | 'padding' | 'position' = Platform.OS === 'ios' ? 'padding' : 'position';
+  const freeSaleModalKeyboardOffset = Platform.OS === 'ios' ? 24 : 0;
   const {
     user,
     stationId,
@@ -440,6 +452,7 @@ export function HomeScreen() {
   const [pendingFreeSaleReason, setPendingFreeSaleReason] = useState<string | null>(null);
   const [priceChangeProduct, setPriceChangeProduct] = useState<CatalogProduct | null>(null);
   const [priceChangeValue, setPriceChangeValue] = useState('0');
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [currentSaleNumber, setCurrentSaleNumber] = useState<number | null>(null);
   const [reservedSaleId, setReservedSaleId] = useState<number | null>(null);
   const [reservedSaleNumber, setReservedSaleNumber] = useState<number | null>(null);
@@ -484,6 +497,7 @@ export function HomeScreen() {
     () => (lastSyncCheckAt ? formatSyncDateTime(lastSyncCheckAt) : 'Sin chequeo aún'),
     [lastSyncCheckAt],
   );
+  const modalCompact = false;
 
   useEffect(() => {
     catalogVersionRef.current = catalogVersion;
@@ -492,6 +506,25 @@ export function HomeScreen() {
   useEffect(() => {
     catalogUpdateAvailableRef.current = catalogUpdateAvailable;
   }, [catalogUpdateAvailable]);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const showSub = Keyboard.addListener(showEvent, (event) => {
+      const nextHeight = event.endCoordinates?.height ?? 0;
+      setKeyboardHeight(Math.max(0, nextHeight));
+    });
+
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     const updateTime = () => {
@@ -2885,29 +2918,37 @@ export function HomeScreen() {
                         ]}
                         onPress={() => handleTilePress(tile)}
                       >
-                        {productImage ? (
-                          <Image
-                            source={{ uri: productImage }}
-                            style={[
-                              styles.tileImage,
-                              {
-                                width: gridMetrics.imageWidth,
-                                height: gridMetrics.imageHeight,
-                              },
-                            ]}
-                            resizeMode="contain"
-                          />
-                        ) : null}
-                        <Text
-                          style={[styles.productTileLabel, { fontSize: gridMetrics.labelFontSize - 1 }]}
-                          numberOfLines={2}
-                          ellipsizeMode="tail"
-                        >
-                          {product.name}
-                        </Text>
-                        <Text style={[styles.productTilePrice, { fontSize: gridMetrics.priceFontSize }]}>
-                          {formatMoney(product.price)}
-                        </Text>
+                        <View style={styles.productTileMain}>
+                          {productImage ? (
+                            <Image
+                              source={{ uri: productImage }}
+                              style={[
+                                styles.tileImage,
+                                {
+                                  width: gridMetrics.imageWidth,
+                                  height: gridMetrics.imageHeight,
+                                },
+                              ]}
+                              resizeMode="contain"
+                            />
+                          ) : null}
+                          <Text
+                            style={[styles.productTileLabel, { fontSize: gridMetrics.labelFontSize - 1 }]}
+                            numberOfLines={2}
+                            ellipsizeMode="tail"
+                          >
+                            {product.name}
+                          </Text>
+                        </View>
+                        <View style={styles.productTileFooter}>
+                          <Text
+                            style={[styles.productTilePrice, { fontSize: gridMetrics.priceFontSize }]}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                          >
+                            {formatMoney(product.price)}
+                          </Text>
+                        </View>
                       </Pressable>
                     );
                   })}
@@ -3130,8 +3171,9 @@ export function HomeScreen() {
           <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
+            keyboardHeight={keyboardHeight}
           >
-            <View style={styles.customerCard}>
+            <View style={[styles.customerCard, modalCompact ? styles.modalCardCompactLarge : null]}>
               <View style={styles.customerHeader}>
                 <View>
                   <Text style={styles.customerKicker}>Cliente</Text>
@@ -3177,7 +3219,7 @@ export function HomeScreen() {
                     <TextInput
                       value={customerSearch}
                       onChangeText={handleCustomerSearchChange}
-                      style={styles.discountInput}
+                      style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
                       placeholder="Buscar por nombre, teléfono o NIT"
                       placeholderTextColor="#7282a3"
                     />
@@ -3253,7 +3295,7 @@ export function HomeScreen() {
                       onChangeText={(value) =>
                         setCustomerForm((prev) => ({ ...prev, name: value }))
                       }
-                      style={styles.discountInput}
+                      style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
                       placeholder="Nombre completo *"
                       placeholderTextColor="#7282a3"
                     />
@@ -3265,7 +3307,7 @@ export function HomeScreen() {
                         setCustomerForm((prev) => ({ ...prev, phone: value }))
                       }
                       keyboardType="phone-pad"
-                      style={styles.discountInput}
+                      style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
                       placeholder="Teléfono"
                       placeholderTextColor="#7282a3"
                     />
@@ -3278,7 +3320,7 @@ export function HomeScreen() {
                       }
                       keyboardType="email-address"
                       autoCapitalize="none"
-                      style={styles.discountInput}
+                      style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
                       placeholder="Email"
                       placeholderTextColor="#7282a3"
                     />
@@ -3289,7 +3331,7 @@ export function HomeScreen() {
                       onChangeText={(value) =>
                         setCustomerForm((prev) => ({ ...prev, taxId: value }))
                       }
-                      style={styles.discountInput}
+                      style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
                       placeholder="NIT / Documento"
                       placeholderTextColor="#7282a3"
                     />
@@ -3332,6 +3374,7 @@ export function HomeScreen() {
           <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
+            keyboardHeight={keyboardHeight}
           >
             <View style={styles.customerConfirmCard}>
               <Text style={styles.quantityTitle}>¿Asignar este cliente?</Text>
@@ -3360,17 +3403,26 @@ export function HomeScreen() {
           <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
+            keyboardHeight={keyboardHeight}
           >
-            <View style={styles.quantityCard}>
-              <Text style={styles.quantityTitle}>
-                {discountScope === 'item' ? 'Aplicar descuento a articulo' : 'Aplicar descuento al carrito'}
-              </Text>
-              <View style={styles.discountModeRow}>
+            <View style={[styles.quantityCard, styles.discountCard, modalCompact ? styles.discountCardCompact : null]}>
+              <View style={[styles.modalHeader, styles.discountHeader]}>
+                <Pressable style={styles.modalCloseButton} onPress={() => setDiscountModalOpen(false)}>
+                  <Text style={styles.modalCloseButtonText}>×</Text>
+                </Pressable>
+                <Text
+                  style={[styles.modalTitleText, styles.discountTitle, modalCompact ? styles.modalTitleTextCompact : null]}
+                  numberOfLines={2}
+                >
+                  {discountScope === 'item' ? 'Descuento por artículo' : 'Descuento al carrito'}
+                </Text>
+              </View>
+              <View style={[styles.discountModeRow, styles.discountModeRowSpacious]}>
                 <Pressable
                   style={[styles.discountModeButton, discountScope === 'item' ? styles.discountModeButtonActive : null]}
                   onPress={() => handleSelectDiscountScope('item')}
                 >
-                  <Text style={styles.discountModeButtonText}>Articulo</Text>
+                  <Text style={styles.discountModeButtonText}>Artículo</Text>
                 </Pressable>
                 <Pressable
                   style={[styles.discountModeButton, discountScope === 'cart' ? styles.discountModeButtonActive : null]}
@@ -3379,7 +3431,7 @@ export function HomeScreen() {
                   <Text style={styles.discountModeButtonText}>Carrito</Text>
                 </Pressable>
               </View>
-              <View style={styles.discountModeRow}>
+              <View style={[styles.discountModeRow, styles.discountModeRowSpacious]}>
                 <Pressable
                   style={[styles.discountModeButton, discountMode === 'value' ? styles.discountModeButtonActive : null]}
                   onPress={() => {
@@ -3399,23 +3451,25 @@ export function HomeScreen() {
                   <Text style={styles.discountModeButtonText}>%</Text>
                 </Pressable>
               </View>
-              <View style={styles.discountInputWrap}>
+              <View style={[styles.discountInputWrap, styles.discountInputWrapLarge, modalCompact ? styles.discountInputWrapCompact : null]}>
                 <TextInput
                   value={discountInput}
                   onChangeText={handleDiscountInputChange}
                   keyboardType={discountMode === 'value' ? 'number-pad' : 'decimal-pad'}
-                  style={styles.discountInput}
+                  style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
                   placeholder={discountMode === 'value' ? 'Cantidad a descontar' : 'Porcentaje a descontar'}
                   placeholderTextColor="#7282a3"
                 />
               </View>
-              <View style={styles.quantityActions}>
-                <Pressable style={styles.quantityCancel} onPress={() => setDiscountModalOpen(false)}>
-                  <Text style={styles.quantityCancelText}>Cancelar</Text>
-                </Pressable>
-                <Pressable style={styles.quantityApply} onPress={handleApplyDiscount}>
-                  <Text style={styles.quantityApplyText}>Aplicar</Text>
-                </Pressable>
+              <View style={[styles.modalFooter, styles.discountFooter]}>
+                <View style={[styles.quantityActions, modalCompact ? styles.quantityActionsCompact : null]}>
+                  <Pressable style={styles.quantityCancel} onPress={() => setDiscountModalOpen(false)}>
+                    <Text style={styles.quantityCancelText}>Cancelar</Text>
+                  </Pressable>
+                  <Pressable style={styles.quantityApply} onPress={handleApplyDiscount}>
+                    <Text style={styles.quantityApplyText}>Aplicar</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </DismissKeyboardOverlay>
@@ -3703,9 +3757,21 @@ export function HomeScreen() {
           <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
+            keyboardHeight={keyboardHeight}
           >
-            <View style={styles.surchargeCard}>
-              <Text style={styles.quantityTitle}>Incremento</Text>
+            <View style={[styles.surchargeCard, modalCompact ? styles.modalCardCompactLarge : null]}>
+              <View style={styles.modalHeader}>
+                <Pressable style={styles.modalCloseButton} onPress={handleCloseSurchargeModal}>
+                  <Text style={styles.modalCloseButtonText}>×</Text>
+                </Pressable>
+                <Text
+                  style={[styles.modalTitleText, modalCompact ? styles.modalTitleTextCompact : null]}
+                  numberOfLines={2}
+                  ellipsizeMode="tail"
+                >
+                  Incremento
+                </Text>
+              </View>
               <Text style={styles.surchargeHint}>
                 {cartTotalBeforeSurcharge > 0
                   ? `Base actual: ${formatMoney(cartTotalBeforeSurcharge)}`
@@ -3729,36 +3795,38 @@ export function HomeScreen() {
                   </Text>
                 </Pressable>
               </View>
-              <View style={styles.surchargeInputWrap}>
+              <View style={[styles.surchargeInputWrap, modalCompact ? styles.discountInputWrapCompact : null]}>
                 <TextInput
                   value={customSurchargeValue.replace(/\B(?=(\d{3})+(?!\d))/g, '.')}
                   onChangeText={(value) => setCustomSurchargeValue(value.replace(/[^\d]/g, ''))}
                   keyboardType="number-pad"
-                  style={styles.discountInput}
+                  style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
                   placeholder="Valor manual (ej. 50.000)"
                   placeholderTextColor="#7282a3"
                 />
               </View>
-              <View style={styles.surchargeInputWrap}>
+              <View style={[styles.surchargeInputWrap, modalCompact ? styles.discountInputWrapCompact : null]}>
                 <TextInput
                   value={customSurchargePercent}
                   onChangeText={(value) => setCustomSurchargePercent(value.replace(/[^\d]/g, '').slice(0, 3))}
                   keyboardType="number-pad"
-                  style={styles.discountInput}
+                  style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
                   placeholder="Porcentaje manual"
                   placeholderTextColor="#7282a3"
                 />
               </View>
-              <View style={styles.surchargeActions}>
-                <Pressable style={styles.quantityCancel} onPress={handleCloseSurchargeModal}>
-                  <Text style={styles.quantityCancelText}>Cerrar</Text>
-                </Pressable>
-                <Pressable style={styles.quantityCancel} onPress={handleDeactivateSurcharge}>
-                  <Text style={styles.quantityCancelText}>Desactivar</Text>
-                </Pressable>
-                <Pressable style={styles.quantityApply} onPress={handleApplyManualSurcharge}>
-                  <Text style={styles.quantityApplyText}>Aplicar</Text>
-                </Pressable>
+              <View style={styles.modalFooter}>
+                <View style={[styles.surchargeActions, modalCompact ? styles.quantityActionsCompact : null]}>
+                  <Pressable style={styles.quantityCancel} onPress={handleCloseSurchargeModal}>
+                    <Text style={styles.quantityCancelText}>Cerrar</Text>
+                  </Pressable>
+                  <Pressable style={styles.quantityCancel} onPress={handleDeactivateSurcharge}>
+                    <Text style={styles.quantityCancelText}>Desactivar</Text>
+                  </Pressable>
+                  <Pressable style={styles.quantityApply} onPress={handleApplyManualSurcharge}>
+                    <Text style={styles.quantityApplyText}>Aplicar</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </DismissKeyboardOverlay>
@@ -3768,23 +3836,12 @@ export function HomeScreen() {
           <DismissKeyboardOverlay
             behavior={freeSaleModalKeyboardBehavior}
             keyboardVerticalOffset={freeSaleModalKeyboardOffset}
+            keyboardHeight={keyboardHeight}
           >
-            <View style={styles.quantityCard}>
-              <Text style={styles.quantityTitle}>
-                Motivo venta libre{freeSaleReasonProduct ? ` · ${freeSaleReasonProduct.name}` : ''}
-              </Text>
-              <View style={styles.discountInputWrap}>
-                <TextInput
-                  value={freeSaleReasonValue}
-                  onChangeText={setFreeSaleReasonValue}
-                  style={styles.discountInput}
-                  placeholder="Escribe el motivo"
-                  placeholderTextColor="#7282a3"
-                />
-              </View>
-              <View style={styles.quantityActions}>
+            <View style={[styles.quantityCard, modalCompact ? styles.modalCardCompact : null]}>
+              <View style={styles.modalHeader}>
                 <Pressable
-                  style={styles.quantityCancel}
+                  style={styles.modalCloseButton}
                   onPress={() => {
                     setFreeSaleReasonModalOpen(false);
                     setFreeSaleReasonTargetCartId(null);
@@ -3793,11 +3850,47 @@ export function HomeScreen() {
                     setPendingFreeSaleReason(null);
                   }}
                 >
-                  <Text style={styles.quantityCancelText}>Cancelar</Text>
+                  <Text style={styles.modalCloseButtonText}>×</Text>
                 </Pressable>
-                <Pressable style={styles.quantityApply} onPress={handleApplyFreeSaleReason}>
-                  <Text style={styles.quantityApplyText}>Guardar</Text>
-                </Pressable>
+                <Text
+                  style={[styles.modalTitleText, modalCompact ? styles.modalTitleTextCompact : null]}
+                  numberOfLines={2}
+                >
+                  Motivo venta libre
+                </Text>
+              </View>
+              {freeSaleReasonProduct ? (
+                <Text style={styles.modalSubtitleText} numberOfLines={2}>
+                  {freeSaleReasonProduct.name}
+                </Text>
+              ) : null}
+              <View style={[styles.discountInputWrap, modalCompact ? styles.discountInputWrapCompact : null]}>
+                <TextInput
+                  value={freeSaleReasonValue}
+                  onChangeText={setFreeSaleReasonValue}
+                  style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
+                  placeholder="Escribe el motivo"
+                  placeholderTextColor="#7282a3"
+                />
+              </View>
+              <View style={styles.modalFooter}>
+                <View style={[styles.quantityActions, modalCompact ? styles.quantityActionsCompact : null]}>
+                  <Pressable
+                    style={styles.quantityCancel}
+                    onPress={() => {
+                      setFreeSaleReasonModalOpen(false);
+                      setFreeSaleReasonTargetCartId(null);
+                      setFreeSaleReasonProduct(null);
+                      setFreeSaleReasonValue('');
+                      setPendingFreeSaleReason(null);
+                    }}
+                  >
+                    <Text style={styles.quantityCancelText}>Cancelar</Text>
+                  </Pressable>
+                  <Pressable style={styles.quantityApply} onPress={handleApplyFreeSaleReason}>
+                    <Text style={styles.quantityApplyText}>Guardar</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </DismissKeyboardOverlay>
@@ -3807,35 +3900,58 @@ export function HomeScreen() {
           <DismissKeyboardOverlay
             behavior={freeSaleModalKeyboardBehavior}
             keyboardVerticalOffset={freeSaleModalKeyboardOffset}
+            keyboardHeight={keyboardHeight}
           >
-            <View style={styles.quantityCard}>
-              <Text style={styles.quantityTitle}>Cambiar precio · {priceChangeProduct.name}</Text>
-              <View style={styles.discountInputWrap}>
-                <TextInput
-                  value={priceChangeValue}
-                  onChangeText={handlePriceChangeInput}
-                  keyboardType="number-pad"
-                  style={styles.discountInput}
-                  placeholder="Nuevo precio"
-                  placeholderTextColor="#7282a3"
-                  autoFocus={Boolean(pendingFreeSaleReason)}
-                  selectTextOnFocus
-                />
-              </View>
-              <View style={styles.quantityActions}>
+            <View style={[styles.quantityCard, modalCompact ? styles.modalCardCompact : null]}>
+              <View style={styles.modalHeader}>
                 <Pressable
-                  style={styles.quantityCancel}
+                  style={styles.modalCloseButton}
                   onPress={() => {
                     setPriceChangeProduct(null);
                     setPriceChangeValue('0');
                     setPendingFreeSaleReason(null);
                   }}
                 >
-                  <Text style={styles.quantityCancelText}>Cancelar</Text>
+                  <Text style={styles.modalCloseButtonText}>×</Text>
                 </Pressable>
-                <Pressable style={styles.quantityApply} onPress={handleApplyPriceChange}>
-                  <Text style={styles.quantityApplyText}>Aplicar</Text>
-                </Pressable>
+                <Text
+                  style={[styles.modalTitleText, modalCompact ? styles.modalTitleTextCompact : null]}
+                  numberOfLines={2}
+                >
+                  Cambiar precio
+                </Text>
+              </View>
+              <Text style={styles.modalSubtitleText} numberOfLines={2}>
+                {priceChangeProduct.name}
+              </Text>
+              <View style={[styles.discountInputWrap, modalCompact ? styles.discountInputWrapCompact : null]}>
+                <TextInput
+                  value={priceChangeValue}
+                  onChangeText={handlePriceChangeInput}
+                  keyboardType="number-pad"
+                  style={[styles.discountInput, modalCompact ? styles.discountInputCompact : null]}
+                  placeholder="Nuevo precio"
+                  placeholderTextColor="#7282a3"
+                  autoFocus={Boolean(pendingFreeSaleReason)}
+                  selectTextOnFocus
+                />
+              </View>
+              <View style={styles.modalFooter}>
+                <View style={[styles.quantityActions, modalCompact ? styles.quantityActionsCompact : null]}>
+                  <Pressable
+                    style={styles.quantityCancel}
+                    onPress={() => {
+                      setPriceChangeProduct(null);
+                      setPriceChangeValue('0');
+                      setPendingFreeSaleReason(null);
+                    }}
+                  >
+                    <Text style={styles.quantityCancelText}>Cancelar</Text>
+                  </Pressable>
+                  <Pressable style={styles.quantityApply} onPress={handleApplyPriceChange}>
+                    <Text style={styles.quantityApplyText}>Aplicar</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </DismissKeyboardOverlay>
@@ -3845,34 +3961,54 @@ export function HomeScreen() {
           <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
+            keyboardHeight={keyboardHeight}
           >
-            <View style={styles.quantityCard}>
-              <Text style={styles.quantityTitle}>Cambiar cantidad</Text>
-              <View style={styles.quantityControls}>
-                <Pressable style={styles.quantityStepper} onPress={() => adjustQuantityValue(-1)}>
-                  <Text style={styles.quantityStepperText}>-</Text>
+            <View style={[styles.quantityCard, modalCompact ? styles.modalCardCompact : null]}>
+              <View style={styles.modalHeader}>
+                <Pressable style={styles.modalCloseButton} onPress={() => setQuantityModalOpen(false)}>
+                  <Text style={styles.modalCloseButtonText}>×</Text>
                 </Pressable>
-                <View style={styles.quantityInputWrap}>
+                <Text
+                  style={[styles.modalTitleText, modalCompact ? styles.modalTitleTextCompact : null]}
+                  numberOfLines={2}
+                  ellipsizeMode="tail"
+                >
+                  Cambiar cantidad
+                </Text>
+              </View>
+              <View style={[styles.quantityControls, modalCompact ? styles.quantityControlsCompact : null]}>
+                <Pressable
+                  style={[styles.quantityStepper, modalCompact ? styles.quantityStepperCompact : null]}
+                  onPress={() => adjustQuantityValue(-1)}
+                >
+                  <Text style={[styles.quantityStepperText, modalCompact ? styles.quantityStepperTextCompact : null]}>-</Text>
+                </Pressable>
+                <View style={[styles.quantityInputWrap, modalCompact ? styles.quantityInputWrapCompact : null]}>
                   <TextInput
                     value={quantityValue}
                     onChangeText={(value) => setQuantityValue(value.replace(/[^0-9]/g, ''))}
                     keyboardType="number-pad"
-                    style={styles.quantityInput}
+                    style={[styles.quantityInput, modalCompact ? styles.quantityInputCompact : null]}
                     placeholder="1"
                     placeholderTextColor="#7282a3"
                   />
                 </View>
-                <Pressable style={styles.quantityStepper} onPress={() => adjustQuantityValue(1)}>
-                  <Text style={styles.quantityStepperText}>+</Text>
+                <Pressable
+                  style={[styles.quantityStepper, modalCompact ? styles.quantityStepperCompact : null]}
+                  onPress={() => adjustQuantityValue(1)}
+                >
+                  <Text style={[styles.quantityStepperText, modalCompact ? styles.quantityStepperTextCompact : null]}>+</Text>
                 </Pressable>
               </View>
-              <View style={styles.quantityActions}>
-                <Pressable style={styles.quantityCancel} onPress={() => setQuantityModalOpen(false)}>
-                  <Text style={styles.quantityCancelText}>Cancelar</Text>
-                </Pressable>
-                <Pressable style={styles.quantityApply} onPress={handleApplyQuantity}>
-                  <Text style={styles.quantityApplyText}>Aplicar</Text>
-                </Pressable>
+              <View style={styles.modalFooter}>
+                <View style={[styles.quantityActions, modalCompact ? styles.quantityActionsCompact : null]}>
+                  <Pressable style={styles.quantityCancel} onPress={() => setQuantityModalOpen(false)}>
+                    <Text style={styles.quantityCancelText}>Cancelar</Text>
+                  </Pressable>
+                  <Pressable style={styles.quantityApply} onPress={handleApplyQuantity}>
+                    <Text style={styles.quantityApplyText}>Aplicar</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </DismissKeyboardOverlay>
@@ -4208,26 +4344,27 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 10,
+    paddingTop: 9,
+    paddingBottom: 7,
     borderBottomWidth: 1,
     borderBottomColor: '#163056',
+    backgroundColor: '#0a1933',
   },
   cartTitle: {
     color: '#f8fbff',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '800',
-    marginBottom: 6,
+    marginBottom: 3,
     textTransform: 'uppercase',
   },
   cartSaleNo: {
     color: '#adc2dd',
-    fontSize: 14,
+    fontSize: 12,
   },
   cartCustomerInfo: {
     color: '#74e6c0',
-    fontSize: 12,
-    marginTop: 4,
+    fontSize: 11,
+    marginTop: 3,
     maxWidth: 180,
   },
   cartCustomerRow: {
@@ -4237,25 +4374,25 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   cartCustomerRemoveButton: {
-    marginTop: 4,
-    minHeight: 22,
+    marginTop: 2,
+    minHeight: 20,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#2d4f7c',
     backgroundColor: '#11253f',
-    paddingHorizontal: 8,
+    paddingHorizontal: 7,
     alignItems: 'center',
     justifyContent: 'center',
   },
   cartCustomerRemoveText: {
     color: '#d8e6fb',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
   },
   cartLines: {
     color: '#adc2dd',
-    fontSize: 13,
-    paddingTop: 8,
+    fontSize: 12,
+    paddingTop: 5,
   },
   saleNoticeWrap: {
     marginHorizontal: 12,
@@ -4656,6 +4793,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#4a5f80',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
+  },
+  productTileMain: {
+    flex: 1,
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  productTileFooter: {
+    width: '100%',
+    minHeight: 22,
+    justifyContent: 'flex-end',
+    marginTop: 4,
   },
   backTile: {
     borderRadius: 14,
@@ -4694,6 +4844,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
     textAlign: 'center',
+    width: '100%',
+    lineHeight: 16,
   },
   stateCard: {
     width: '100%',
@@ -5157,16 +5309,45 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  quantityOverlayContentKeyboard: {
+    justifyContent: 'flex-start',
+    paddingTop: 18,
+  },
   quantityCard: {
-    width: '100%',
-    maxWidth: 520,
-    maxHeight: '86%',
+    width: '92%',
+    maxWidth: 980,
+    maxHeight: '100%',
     borderRadius: 28,
     borderWidth: 1,
     borderColor: '#33496d',
     backgroundColor: '#0b162b',
+    paddingHorizontal: 26,
+    paddingTop: 20,
+    paddingBottom: 22,
+  },
+  discountCard: {
+    maxWidth: 1080,
     paddingHorizontal: 28,
-    paddingVertical: 26,
+    paddingTop: 22,
+    paddingBottom: 24,
+  },
+  discountCardCompact: {
+    maxWidth: 980,
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 18,
+  },
+  modalCardCompact: {
+    maxHeight: '86%',
+    paddingHorizontal: 22,
+    paddingTop: 14,
+    paddingBottom: 14,
+  },
+  modalCardCompactLarge: {
+    maxHeight: '88%',
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 12,
   },
   customerCard: {
     width: '100%',
@@ -5356,21 +5537,26 @@ const styles = StyleSheet.create({
   },
   quantityTitle: {
     color: '#f8fbff',
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     textAlign: 'center',
-    marginBottom: 22,
+    marginBottom: 14,
+  },
+  quantityTitleCompact: {
+    fontSize: 18,
+    marginBottom: 14,
   },
   surchargeCard: {
-    width: '100%',
-    maxWidth: 700,
-    maxHeight: '86%',
+    width: '92%',
+    maxWidth: 1060,
+    maxHeight: '100%',
     borderRadius: 28,
     borderWidth: 1,
     borderColor: '#33496d',
     backgroundColor: '#0b162b',
-    paddingHorizontal: 28,
-    paddingVertical: 26,
+    paddingHorizontal: 22,
+    paddingTop: 16,
+    paddingBottom: 20,
   },
   surchargeHint: {
     marginTop: -8,
@@ -5422,9 +5608,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 14,
   },
+  quantityControlsCompact: {
+    gap: 10,
+  },
   quantityStepper: {
-    width: 88,
-    height: 88,
+    width: 76,
+    height: 76,
     borderRadius: 22,
     borderWidth: 1,
     borderColor: '#33496d',
@@ -5432,19 +5621,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  quantityStepperCompact: {
+    width: 72,
+    height: 72,
+    borderRadius: 18,
+  },
   quantityStepperText: {
     color: '#f8fbff',
-    fontSize: 38,
+    fontSize: 34,
     fontWeight: '700',
+  },
+  quantityStepperTextCompact: {
+    fontSize: 30,
   },
   quantityInputWrap: {
     flex: 1,
-    height: 88,
+    height: 82,
     borderRadius: 22,
     borderWidth: 1,
     borderColor: '#33496d',
     backgroundColor: '#081224',
     justifyContent: 'center',
+  },
+  quantityInputWrapCompact: {
+    height: 74,
   },
   quantityInput: {
     color: '#f8fbff',
@@ -5453,20 +5653,30 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: 16,
   },
+  quantityInputCompact: {
+    fontSize: 28,
+  },
   quantityActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 12,
-    marginTop: 22,
+    marginTop: 0,
+  },
+  quantityActionsCompact: {
+    marginTop: 0,
+    gap: 10,
   },
   discountModeRow: {
     flexDirection: 'row',
     gap: 12,
-    marginBottom: 14,
+    marginBottom: 10,
+  },
+  discountModeRowSpacious: {
+    marginBottom: 12,
   },
   discountModeButton: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 44,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#33496d',
@@ -5480,11 +5690,11 @@ const styles = StyleSheet.create({
   },
   discountModeButtonText: {
     color: '#f8fbff',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
   },
   discountInputWrap: {
-    height: 74,
+    height: 70,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: '#33496d',
@@ -5492,14 +5702,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 18,
   },
+  discountInputWrapLarge: {
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  discountInputWrapCompact: {
+    height: 60,
+    borderRadius: 14,
+  },
   discountInput: {
     color: '#f8fbff',
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '700',
     textAlign: 'center',
   },
+  discountInputCompact: {
+    fontSize: 22,
+  },
   quantityCancel: {
-    minWidth: 132,
+    minWidth: 120,
     height: 48,
     borderRadius: 14,
     backgroundColor: '#1e2a42',
@@ -5513,7 +5734,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   quantityApply: {
-    minWidth: 132,
+    minWidth: 120,
     height: 48,
     borderRadius: 14,
     backgroundColor: '#19d295',
@@ -5525,5 +5746,79 @@ const styles = StyleSheet.create({
     color: '#031424',
     fontSize: 16,
     fontWeight: '800',
+  },
+  modalHeader: {
+    minHeight: 54,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    paddingHorizontal: 52,
+    marginBottom: 10,
+  },
+  discountHeader: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  modalTitleText: {
+    width: '100%',
+    color: '#f8fbff',
+    fontSize: 24,
+    lineHeight: 30,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  modalTitleTextCompact: {
+    fontSize: 18,
+    lineHeight: 22,
+  },
+  discountTitle: {
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: '800',
+  },
+  modalSubtitleText: {
+    color: '#9bb0ce',
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginTop: -2,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+  },
+  modalCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: '#35527b',
+    backgroundColor: '#11243f',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+    elevation: 2,
+    position: 'absolute',
+    left: 0,
+    top: 0,
+  },
+  modalCloseButtonText: {
+    color: '#dbe8fb',
+    fontSize: 22,
+    lineHeight: 22,
+    fontWeight: '500',
+  },
+  modalFooter: {
+    marginTop: 12,
+    paddingTop: 10,
+    paddingBottom: 2,
+    borderTopWidth: 1,
+    borderTopColor: '#173057',
+    width: '100%',
+    minHeight: 52,
+    justifyContent: 'center',
+  },
+  discountFooter: {
+    marginTop: 14,
+    paddingTop: 12,
   },
 });
