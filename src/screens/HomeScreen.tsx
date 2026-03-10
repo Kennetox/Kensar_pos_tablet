@@ -5,6 +5,7 @@ import {
   Animated,
   Easing,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   LayoutChangeEvent,
   Linking,
@@ -15,6 +16,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -317,10 +319,36 @@ function getPaymentBlockedReason(params: {
   return null;
 }
 
+function DismissKeyboardOverlay({
+  behavior,
+  keyboardVerticalOffset,
+  children,
+}: {
+  behavior: 'height' | 'padding' | 'position';
+  keyboardVerticalOffset: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+      <KeyboardAvoidingView
+        style={styles.quantityOverlay}
+        behavior={behavior}
+        keyboardVerticalOffset={keyboardVerticalOffset}
+      >
+        <TouchableWithoutFeedback onPress={() => undefined} accessible={false}>
+          <View style={styles.quantityOverlayContent}>{children}</View>
+        </TouchableWithoutFeedback>
+      </KeyboardAvoidingView>
+    </TouchableWithoutFeedback>
+  );
+}
+
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
   const modalKeyboardBehavior = Platform.OS === 'ios' ? 'padding' : 'height';
   const modalKeyboardOffset = Platform.OS === 'ios' ? 24 : 0;
+  const freeSaleModalKeyboardBehavior: 'height' | 'padding' | 'position' = 'padding';
+  const freeSaleModalKeyboardOffset = Platform.OS === 'ios' ? 24 : 8;
   const {
     user,
     stationId,
@@ -3099,8 +3127,7 @@ export function HomeScreen() {
         ) : null}
 
         {customerModalOpen ? (
-          <KeyboardAvoidingView
-            style={styles.quantityOverlay}
+          <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
           >
@@ -3298,12 +3325,11 @@ export function HomeScreen() {
 
               {customerError ? <Text style={styles.customerErrorText}>{customerError}</Text> : null}
             </View>
-          </KeyboardAvoidingView>
+          </DismissKeyboardOverlay>
         ) : null}
 
         {pendingCustomerSelection ? (
-          <KeyboardAvoidingView
-            style={styles.quantityOverlay}
+          <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
           >
@@ -3327,12 +3353,11 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </KeyboardAvoidingView>
+          </DismissKeyboardOverlay>
         ) : null}
 
         {discountModalOpen ? (
-          <KeyboardAvoidingView
-            style={styles.quantityOverlay}
+          <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
           >
@@ -3393,7 +3418,7 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </KeyboardAvoidingView>
+          </DismissKeyboardOverlay>
         ) : null}
 
         {showSyncModal ? (
@@ -3675,8 +3700,7 @@ export function HomeScreen() {
         ) : null}
 
         {surchargeModalOpen ? (
-          <KeyboardAvoidingView
-            style={styles.quantityOverlay}
+          <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
           >
@@ -3737,14 +3761,13 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </KeyboardAvoidingView>
+          </DismissKeyboardOverlay>
         ) : null}
 
         {freeSaleReasonModalOpen ? (
-          <KeyboardAvoidingView
-            style={styles.quantityOverlay}
-            behavior={modalKeyboardBehavior}
-            keyboardVerticalOffset={modalKeyboardOffset}
+          <DismissKeyboardOverlay
+            behavior={freeSaleModalKeyboardBehavior}
+            keyboardVerticalOffset={freeSaleModalKeyboardOffset}
           >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>
@@ -3777,14 +3800,13 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </KeyboardAvoidingView>
+          </DismissKeyboardOverlay>
         ) : null}
 
         {priceChangeProduct ? (
-          <KeyboardAvoidingView
-            style={styles.quantityOverlay}
-            behavior={modalKeyboardBehavior}
-            keyboardVerticalOffset={modalKeyboardOffset}
+          <DismissKeyboardOverlay
+            behavior={freeSaleModalKeyboardBehavior}
+            keyboardVerticalOffset={freeSaleModalKeyboardOffset}
           >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>Cambiar precio · {priceChangeProduct.name}</Text>
@@ -3796,6 +3818,7 @@ export function HomeScreen() {
                   style={styles.discountInput}
                   placeholder="Nuevo precio"
                   placeholderTextColor="#7282a3"
+                  autoFocus={Boolean(pendingFreeSaleReason)}
                   selectTextOnFocus
                 />
               </View>
@@ -3815,12 +3838,11 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </KeyboardAvoidingView>
+          </DismissKeyboardOverlay>
         ) : null}
 
         {quantityModalOpen ? (
-          <KeyboardAvoidingView
-            style={styles.quantityOverlay}
+          <DismissKeyboardOverlay
             behavior={modalKeyboardBehavior}
             keyboardVerticalOffset={modalKeyboardOffset}
           >
@@ -3853,7 +3875,7 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </KeyboardAvoidingView>
+          </DismissKeyboardOverlay>
         ) : null}
       </View>
     </SafeAreaView>
@@ -5129,6 +5151,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
     paddingVertical: 18,
+  },
+  quantityOverlayContent: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   quantityCard: {
     width: '100%',
