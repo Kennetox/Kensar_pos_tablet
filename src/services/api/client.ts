@@ -43,7 +43,7 @@ export function createApiClient(config: ApiClientConfig) {
         detail = undefined;
       }
 
-      if (res.status === 401 && token) {
+      if ((res.status === 401 || res.status === 403) && token) {
         config.onUnauthorized?.();
       }
 

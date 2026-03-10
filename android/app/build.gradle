@@ -85,7 +85,7 @@ android {
         applicationId "com.kensar_pos_tablet"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
+        versionCode 4
         versionName appVersionName
     }
     signingConfigs {
@@ -95,15 +95,21 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            if (project.hasProperty('METRIK_UPLOAD_STORE_FILE')) {
+                storeFile file("../app/${METRIK_UPLOAD_STORE_FILE}")
+                storePassword METRIK_UPLOAD_STORE_PASSWORD
+                keyAlias METRIK_UPLOAD_KEY_ALIAS
+                keyPassword METRIK_UPLOAD_KEY_PASSWORD
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig project.hasProperty('METRIK_UPLOAD_STORE_FILE') ? signingConfigs.release : signingConfigs.debug
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

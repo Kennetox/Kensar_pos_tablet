@@ -130,6 +130,7 @@ export function LoginScreen() {
       } else {
         setError('No pudimos iniciar sesion.');
       }
+      setPin('');
     } finally {
       setSubmitting(false);
     }
@@ -360,6 +361,7 @@ function Field({
   keyboardType,
   secureTextEntry,
   placeholder,
+  clearable = true,
 }: {
   label: string;
   value: string;
@@ -368,21 +370,29 @@ function Field({
   keyboardType?: 'default' | 'email-address';
   secureTextEntry?: boolean;
   placeholder?: string;
+  clearable?: boolean;
 }) {
   return (
     <View style={styles.fieldWrap}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        autoCapitalize={autoCapitalize}
-        autoCorrect={false}
-        keyboardType={keyboardType}
-        secureTextEntry={secureTextEntry}
-        style={styles.fieldInput}
-        placeholder={placeholder}
-        placeholderTextColor="#6c778b"
-      />
+      <View style={styles.fieldInputWrap}>
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={false}
+          keyboardType={keyboardType}
+          secureTextEntry={secureTextEntry}
+          style={styles.fieldInput}
+          placeholder={placeholder}
+          placeholderTextColor="#6c778b"
+        />
+        {clearable && value.length > 0 ? (
+          <Pressable style={styles.fieldClearButton} onPress={() => onChangeText('')}>
+            <Text style={styles.fieldClearButtonText}>×</Text>
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -720,6 +730,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginBottom: 8,
   },
+  fieldInputWrap: {
+    position: 'relative',
+    justifyContent: 'center',
+  },
   fieldInput: {
     borderRadius: 20,
     borderWidth: 1,
@@ -729,6 +743,25 @@ const styles = StyleSheet.create({
     fontSize: 18,
     paddingHorizontal: 18,
     paddingVertical: 18,
+    paddingRight: 56,
+  },
+  fieldClearButton: {
+    position: 'absolute',
+    right: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.35)',
+    backgroundColor: 'rgba(15, 23, 42, 0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fieldClearButtonText: {
+    color: '#cbd5e1',
+    fontSize: 20,
+    fontWeight: '800',
+    lineHeight: 20,
   },
   footerDot: {
     width: 10,

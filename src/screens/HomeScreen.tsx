@@ -5,9 +5,11 @@ import {
   Animated,
   Easing,
   Image,
+  KeyboardAvoidingView,
   LayoutChangeEvent,
   Linking,
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,6 +25,7 @@ import { APP_VERSION_LABEL } from '../constants/appVersion';
 import { PaymentPage, type PaymentLineInput } from '../features/pos/payment/PaymentPage';
 import { ApiError, createApiClient } from '../services/api/client';
 import {
+  fetchCatalogVersion as fetchCatalogVersionApi,
   fetchCatalogProducts,
   fetchProductGroupAppearances,
   type CatalogProduct,
@@ -258,6 +261,19 @@ function formatSyncDateTime(timestamp: number) {
   });
 }
 
+function buildCatalogVersionKey(payload?: {
+  updated_at?: string | null;
+  products_count?: number | null;
+  groups_count?: number | null;
+}) {
+  const updatedAtKey = payload?.updated_at ?? '';
+  const countsKey = `${payload?.products_count ?? ''}:${payload?.groups_count ?? ''}`;
+  if (!updatedAtKey && countsKey === ':') {
+    return null;
+  }
+  return `${updatedAtKey}|${countsKey}`;
+}
+
 function normalizeBarcode(value?: string | null): string {
   return (value ?? '').replace(/\s+/g, '').trim().toLowerCase();
 }
@@ -311,6 +327,7 @@ export function HomeScreen() {
     apiBase,
     token,
     logout,
+    expireSession,
     syncStatus,
     syncReason,
     lastSyncAt,
@@ -379,6 +396,9 @@ export function HomeScreen() {
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [actionToastTone, setActionToastTone] = useState<'info' | 'error'>('info');
   const [actionToastVisible, setActionToastVisible] = useState(false);
+  const [syncingCatalog, setSyncingCatalog] = useState(false);
+  const [catalogVersion, setCatalogVersion] = useState<string | null>(null);
+  const [catalogUpdateAvailable, setCatalogUpdateAvailable] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [refreshingSync, setRefreshingSync] = useState(false);
   const [bogotaTimeLabel, setBogotaTimeLabel] = useState('');
@@ -396,7 +416,10 @@ export function HomeScreen() {
   const slideAnim = useRef(new Animated.Value(0)).current;
   const toastAnim = useRef(new Animated.Value(0)).current;
   const scannerCooldownRef = useRef(0);
+  const catalogVersionRef = useRef<string | null>(null);
+  const catalogUpdateAvailableRef = useRef(false);
   const cartWidthRef = useRef(DEFAULT_CART_WIDTH);
+  const dragStartWidthRef = useRef(DEFAULT_CART_WIDTH);
   const lastDividerTapRef = useRef(0);
   const toastTimersRef = useRef<{
     hide?: ReturnType<typeof setTimeout>;
@@ -413,9 +436,9 @@ export function HomeScreen() {
       createApiClient({
         getBaseUrl: () => apiBase,
         getToken: () => token,
-        onUnauthorized: logout,
+        onUnauthorized: expireSession,
       }),
-    [apiBase, logout, token],
+    [apiBase, expireSession, token],
   );
 
   const resolvedPosName = useMemo(() => {
@@ -431,6 +454,14 @@ export function HomeScreen() {
     () => (lastSyncCheckAt ? formatSyncDateTime(lastSyncCheckAt) : 'Sin chequeo aún'),
     [lastSyncCheckAt],
   );
+
+  useEffect(() => {
+    catalogVersionRef.current = catalogVersion;
+  }, [catalogVersion]);
+
+  useEffect(() => {
+    catalogUpdateAvailableRef.current = catalogUpdateAvailable;
+  }, [catalogUpdateAvailable]);
 
   useEffect(() => {
     const updateTime = () => {
@@ -449,6 +480,7 @@ export function HomeScreen() {
     const interval = setInterval(updateTime, 30000);
     return () => clearInterval(interval);
   }, []);
+
 
   useEffect(() => {
     let active = true;
@@ -562,6 +594,73 @@ export function HomeScreen() {
     };
   }, [apiClient, currentSaleNumber, reservedSaleId, reservedSaleNumber, resolvedPosName, stationId]);
 
+  const loadProducts = useCallback(async (): Promise<boolean> => {
+    try {
+      const catalogProducts = await fetchCatalogProducts(apiClient);
+      setProducts(catalogProducts.filter((product) => product.active));
+      setError(null);
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo cargar el catalogo.');
+      return false;
+    }
+  }, [apiClient]);
+
+  const loadGroupAppearances = useCallback(async (): Promise<boolean> => {
+    try {
+      const productGroups = await fetchProductGroupAppearances(apiClient);
+      const appearanceMap: Record<string, GroupAppearance> = {};
+      productGroups.forEach((group: ProductGroupAppearance) => {
+        if (group.path) {
+          appearanceMap[group.path] = {
+            image_url: group.image_url,
+            image_thumb_url: group.image_thumb_url,
+            tile_color: group.tile_color,
+          };
+        }
+      });
+      setGroupAppearances(appearanceMap);
+      return true;
+    } catch (err) {
+      console.warn('No se pudieron cargar grupos de catalogo', err);
+      return false;
+    }
+  }, [apiClient]);
+
+  const checkCatalogVersion = useCallback(
+    async (options?: { silent?: boolean; markSynced?: boolean }) => {
+      if (!token) {
+        return null;
+      }
+      try {
+        const payload = await fetchCatalogVersionApi(apiClient);
+        const nextVersion = buildCatalogVersionKey(payload);
+        if (options?.markSynced) {
+          setCatalogVersion(nextVersion);
+          setCatalogUpdateAvailable(false);
+          return nextVersion;
+        }
+        const previousVersion = catalogVersionRef.current;
+        if (previousVersion == null && nextVersion != null) {
+          setCatalogVersion(nextVersion);
+          return nextVersion;
+        }
+        if (previousVersion != null && nextVersion != null && nextVersion !== previousVersion) {
+          if (!catalogUpdateAvailableRef.current) {
+            setCatalogUpdateAvailable(true);
+          }
+        }
+        return nextVersion;
+      } catch (err) {
+        if (!options?.silent) {
+          console.warn('No se pudo verificar la version de catalogo', err);
+        }
+        return null;
+      }
+    },
+    [apiClient, token],
+  );
+
   useEffect(() => {
     let active = true;
 
@@ -569,31 +668,16 @@ export function HomeScreen() {
       setIsLoading(true);
       setError(null);
       try {
-        const [catalogProducts, productGroups] = await Promise.all([
-          fetchCatalogProducts(apiClient),
-          fetchProductGroupAppearances(apiClient),
+        const [productsOk, groupsOk] = await Promise.all([
+          loadProducts(),
+          loadGroupAppearances(),
         ]);
-
-        if (!active) {
-          return;
+        if (!active) return;
+        if (productsOk && groupsOk) {
+          await checkCatalogVersion({ silent: true, markSynced: true });
         }
-
-        setProducts(catalogProducts.filter((product) => product.active));
-        const appearanceMap: Record<string, GroupAppearance> = {};
-        productGroups.forEach((group: ProductGroupAppearance) => {
-          if (group.path) {
-            appearanceMap[group.path] = {
-              image_url: group.image_url,
-              image_thumb_url: group.image_thumb_url,
-              tile_color: group.tile_color,
-            };
-          }
-        });
-        setGroupAppearances(appearanceMap);
       } catch (err) {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
         setError(err instanceof Error ? err.message : 'No se pudo cargar el catalogo.');
       } finally {
         if (active) {
@@ -605,7 +689,32 @@ export function HomeScreen() {
     return () => {
       active = false;
     };
-  }, [apiClient]);
+  }, [checkCatalogVersion, loadGroupAppearances, loadProducts]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    let active = true;
+    (async () => {
+      if (!active) return;
+      await checkCatalogVersion({ silent: true, markSynced: true });
+    })();
+    return () => {
+      active = false;
+    };
+  }, [checkCatalogVersion, token]);
+
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    checkCatalogVersion({ silent: true }).catch(() => undefined);
+    const interval = setInterval(() => {
+      checkCatalogVersion({ silent: true }).catch(() => undefined);
+    }, 30 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [checkCatalogVersion, token]);
 
   useEffect(() => {
     let active = true;
@@ -737,6 +846,28 @@ export function HomeScreen() {
       setRefreshingSync(false);
     }
   }, [refreshSyncStatus]);
+
+  const handleManualSync = useCallback(async () => {
+    if (!token) {
+      showActionToast('Debes iniciar sesion para sincronizar.', 2600, 'error');
+      return;
+    }
+    if (syncingCatalog) {
+      return;
+    }
+    setSyncingCatalog(true);
+    try {
+      const [productsOk, groupsOk] = await Promise.all([loadProducts(), loadGroupAppearances()]);
+      if (productsOk && groupsOk) {
+        await checkCatalogVersion({ silent: true, markSynced: true });
+        showActionToast('Catalogo sincronizado.');
+      } else {
+        showActionToast('No se pudo sincronizar. Intenta nuevamente.', 2600, 'error');
+      }
+    } finally {
+      setSyncingCatalog(false);
+    }
+  }, [checkCatalogVersion, loadGroupAppearances, loadProducts, showActionToast, syncingCatalog, token]);
 
   useEffect(() => {
     if (!token) {
@@ -1022,16 +1153,20 @@ export function HomeScreen() {
   const dividerPanResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dx) > 3,
+        onPanResponderGrant: () => {
+          dragStartWidthRef.current = cartWidthRef.current;
+        },
         onPanResponderMove: (_, gestureState) => {
           if (!bodyWidth) {
             return;
           }
 
+          const dragDelta = gestureState.dx * 0.65;
           const nextWidth = Math.max(
             MIN_CART_WIDTH,
-            Math.min(bodyWidth - 520, cartWidthRef.current + gestureState.dx),
+            Math.min(bodyWidth - 520, dragStartWidthRef.current + dragDelta),
           );
           setCartWidth(nextWidth);
         },
@@ -1040,12 +1175,17 @@ export function HomeScreen() {
             return;
           }
 
+          const dragDelta = gestureState.dx * 0.65;
           const nextWidth = Math.max(
             MIN_CART_WIDTH,
-            Math.min(bodyWidth - 520, cartWidthRef.current + gestureState.dx),
+            Math.min(bodyWidth - 520, dragStartWidthRef.current + dragDelta),
           );
           cartWidthRef.current = nextWidth;
+          dragStartWidthRef.current = nextWidth;
           setCartWidth(nextWidth);
+        },
+        onPanResponderTerminate: () => {
+          dragStartWidthRef.current = cartWidthRef.current;
         },
       }),
     [bodyWidth],
@@ -2364,7 +2504,7 @@ export function HomeScreen() {
   return (
     <SafeAreaView style={styles.safeArea} edges={['left', 'right']}>
       <View style={styles.container}>
-        <View style={[styles.topBar, { paddingTop: Math.max(6, insets.top), minHeight: 84 + Math.max(0, insets.top - 6) }]}>
+        <View style={[styles.topBar, { paddingTop: Math.max(4, insets.top), minHeight: 74 + Math.max(0, insets.top - 4) }]}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -2404,8 +2544,22 @@ export function HomeScreen() {
           </ScrollView>
 
           <View style={styles.topBarMeta}>
-            <Pressable style={styles.syncButton}>
-              <Text style={styles.syncButtonText}>Sincronizar</Text>
+            <Pressable
+              style={[
+                styles.syncButton,
+                catalogUpdateAvailable && !syncingCatalog ? styles.syncButtonAlert : null,
+                syncingCatalog ? styles.syncButtonDisabled : null,
+              ]}
+              onPress={() => {
+                handleManualSync().catch(() => undefined);
+              }}
+              disabled={syncingCatalog}
+            >
+              {syncingCatalog ? (
+                <ActivityIndicator size="small" color="#f1f6ff" />
+              ) : null}
+              <Text style={styles.syncButtonText}>{syncingCatalog ? 'Sincronizando...' : 'Sincronizar'}</Text>
+              {catalogUpdateAvailable && !syncingCatalog ? <View style={styles.syncButtonBadge} /> : null}
             </Pressable>
             <Pressable style={styles.syncChip} onPress={() => setShowSyncModal(true)}>
               <View style={[styles.syncDot, { backgroundColor: syncMeta.color }]} />
@@ -2672,7 +2826,11 @@ export function HomeScreen() {
                               resizeMode="contain"
                             />
                           ) : null}
-                          <Text style={[styles.categoryTileLabel, { fontSize: gridMetrics.labelFontSize }]}>
+                          <Text
+                            style={[styles.categoryTileLabel, { fontSize: gridMetrics.labelFontSize }]}
+                            numberOfLines={2}
+                            ellipsizeMode="tail"
+                          >
                             {tile.label}
                           </Text>
                         </Pressable>
@@ -2710,7 +2868,11 @@ export function HomeScreen() {
                             resizeMode="contain"
                           />
                         ) : null}
-                        <Text style={[styles.productTileLabel, { fontSize: gridMetrics.labelFontSize - 1 }]}>
+                        <Text
+                          style={[styles.productTileLabel, { fontSize: gridMetrics.labelFontSize - 1 }]}
+                          numberOfLines={2}
+                          ellipsizeMode="tail"
+                        >
                           {product.name}
                         </Text>
                         <Text style={[styles.productTilePrice, { fontSize: gridMetrics.priceFontSize }]}>
@@ -2935,7 +3097,11 @@ export function HomeScreen() {
         ) : null}
 
         {customerModalOpen ? (
-          <View style={styles.quantityOverlay}>
+          <KeyboardAvoidingView
+            style={styles.quantityOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+          >
             <View style={styles.customerCard}>
               <View style={styles.customerHeader}>
                 <View>
@@ -3130,11 +3296,15 @@ export function HomeScreen() {
 
               {customerError ? <Text style={styles.customerErrorText}>{customerError}</Text> : null}
             </View>
-          </View>
+          </KeyboardAvoidingView>
         ) : null}
 
         {pendingCustomerSelection ? (
-          <View style={styles.quantityOverlay}>
+          <KeyboardAvoidingView
+            style={styles.quantityOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+          >
             <View style={styles.customerConfirmCard}>
               <Text style={styles.quantityTitle}>¿Asignar este cliente?</Text>
               <Text style={styles.customerConfirmName}>{pendingCustomerSelection.name}</Text>
@@ -3155,11 +3325,15 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         ) : null}
 
         {discountModalOpen ? (
-          <View style={styles.quantityOverlay}>
+          <KeyboardAvoidingView
+            style={styles.quantityOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+          >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>
                 {discountScope === 'item' ? 'Aplicar descuento a articulo' : 'Aplicar descuento al carrito'}
@@ -3206,7 +3380,6 @@ export function HomeScreen() {
                   style={styles.discountInput}
                   placeholder={discountMode === 'value' ? 'Cantidad a descontar' : 'Porcentaje a descontar'}
                   placeholderTextColor="#7282a3"
-                  autoFocus
                 />
               </View>
               <View style={styles.quantityActions}>
@@ -3218,7 +3391,7 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         ) : null}
 
         {showSyncModal ? (
@@ -3500,7 +3673,11 @@ export function HomeScreen() {
         ) : null}
 
         {surchargeModalOpen ? (
-          <View style={styles.quantityOverlay}>
+          <KeyboardAvoidingView
+            style={styles.quantityOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+          >
             <View style={styles.surchargeCard}>
               <Text style={styles.quantityTitle}>Incremento</Text>
               <Text style={styles.surchargeHint}>
@@ -3558,11 +3735,15 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         ) : null}
 
         {freeSaleReasonModalOpen ? (
-          <View style={styles.quantityOverlay}>
+          <KeyboardAvoidingView
+            style={styles.quantityOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+          >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>
                 Motivo venta libre{freeSaleReasonProduct ? ` · ${freeSaleReasonProduct.name}` : ''}
@@ -3574,7 +3755,6 @@ export function HomeScreen() {
                   style={styles.discountInput}
                   placeholder="Escribe el motivo"
                   placeholderTextColor="#7282a3"
-                  autoFocus
                 />
               </View>
               <View style={styles.quantityActions}>
@@ -3595,11 +3775,15 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         ) : null}
 
         {priceChangeProduct ? (
-          <View style={styles.quantityOverlay}>
+          <KeyboardAvoidingView
+            style={styles.quantityOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+          >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>Cambiar precio · {priceChangeProduct.name}</Text>
               <View style={styles.discountInputWrap}>
@@ -3611,7 +3795,6 @@ export function HomeScreen() {
                   placeholder="Nuevo precio"
                   placeholderTextColor="#7282a3"
                   selectTextOnFocus
-                  autoFocus
                 />
               </View>
               <View style={styles.quantityActions}>
@@ -3630,11 +3813,15 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         ) : null}
 
         {quantityModalOpen ? (
-          <View style={styles.quantityOverlay}>
+          <KeyboardAvoidingView
+            style={styles.quantityOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+          >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>Cambiar cantidad</Text>
               <View style={styles.quantityControls}>
@@ -3649,7 +3836,6 @@ export function HomeScreen() {
                     style={styles.quantityInput}
                     placeholder="1"
                     placeholderTextColor="#7282a3"
-                    autoFocus
                   />
                 </View>
                 <Pressable style={styles.quantityStepper} onPress={() => adjustQuantityValue(1)}>
@@ -3665,7 +3851,7 @@ export function HomeScreen() {
                 </Pressable>
               </View>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         ) : null}
       </View>
     </SafeAreaView>
@@ -3715,7 +3901,7 @@ const styles = StyleSheet.create({
     zIndex: 30,
   },
   topBar: {
-    minHeight: 84,
+    minHeight: 74,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -3724,16 +3910,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#07152b',
     paddingLeft: 16,
     paddingRight: 20,
-    paddingTop: 8,
+    paddingTop: 6,
   },
   actionsRow: {
     gap: 10,
-    paddingVertical: 10,
+    paddingVertical: 7,
     paddingRight: 16,
   },
   actionButton: {
-    minWidth: 112,
-    minHeight: 66,
+    minWidth: 104,
+    minHeight: 58,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#203459',
@@ -3751,7 +3937,7 @@ const styles = StyleSheet.create({
   },
   actionButtonText: {
     color: '#dfe8f7',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
   },
   actionButtonTextDanger: {
@@ -3772,12 +3958,30 @@ const styles = StyleSheet.create({
     borderColor: '#2d4c7f',
     backgroundColor: '#0f1f3b',
     paddingHorizontal: 18,
-    paddingVertical: 12,
+    paddingVertical: 10,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  syncButtonAlert: {
+    borderColor: '#d9b24b',
+    backgroundColor: '#1f2433',
+  },
+  syncButtonDisabled: {
+    opacity: 0.75,
   },
   syncButtonText: {
     color: '#f1f6ff',
     fontSize: 15,
     fontWeight: '700',
+  },
+  syncButtonBadge: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#f4c54f',
+    marginLeft: 2,
   },
   syncChip: {
     width: 24,
@@ -3929,7 +4133,7 @@ const styles = StyleSheet.create({
   },
   userName: {
     color: '#f8fbff',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
   },
   userRole: {
@@ -3938,9 +4142,9 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   avatarButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#1a2945',
     borderWidth: 1,
     borderColor: '#2b426c',
@@ -3949,7 +4153,7 @@ const styles = StyleSheet.create({
   },
   avatarText: {
     color: '#f8fbff',
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
   },
   body: {
@@ -4229,8 +4433,8 @@ const styles = StyleSheet.create({
   },
   searchWrap: {
     paddingHorizontal: 18,
-    paddingTop: 14,
-    paddingBottom: 10,
+    paddingTop: 10,
+    paddingBottom: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#163056',
   },
@@ -4241,7 +4445,7 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    minHeight: 58,
+    minHeight: 54,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#0ecaa8',
@@ -4251,8 +4455,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   searchScannerButton: {
-    width: 58,
-    height: 58,
+    width: 54,
+    height: 54,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#2f4b75',
@@ -4450,12 +4654,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     textAlign: 'center',
+    lineHeight: 18,
+    width: '100%',
   },
   productTileLabel: {
     color: '#ffffff',
     fontSize: 15,
     fontWeight: '800',
     textAlign: 'center',
+    lineHeight: 17,
+    width: '100%',
   },
   productTilePrice: {
     color: '#ffffff',

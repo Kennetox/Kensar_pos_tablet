@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { createApiClient } from '../services/api/client';
 import { fetchSalesHistoryPage, type SaleRead } from '../services/api/pos';
@@ -69,6 +69,7 @@ export function SalesHistoryScreen({
   onBack,
   onShowToast,
 }: SalesHistoryScreenProps) {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<SaleRead[]>([]);
@@ -114,8 +115,16 @@ export function SalesHistoryScreen({
   }, [loadSalesHistory]);
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['left', 'right']}>
-      <View style={styles.container}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom', 'left', 'right']}>
+      <View
+        style={[
+          styles.container,
+          {
+            paddingTop: Math.max(10, insets.top + 4),
+            paddingBottom: Math.max(12, insets.bottom + 8),
+          },
+        ]}
+      >
         <View style={styles.header}>
           <View style={styles.headerMain}>
             <Text style={styles.kicker}>Historial de hoy</Text>
@@ -139,7 +148,13 @@ export function SalesHistoryScreen({
           </View>
         </View>
 
-        <ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={[
+            styles.listContent,
+            { paddingBottom: Math.max(8, insets.bottom) },
+          ]}
+        >
           {loading ? (
             <Text style={styles.stateText}>Cargando ventas...</Text>
           ) : error ? (

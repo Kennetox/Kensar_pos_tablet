@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 
 import { logoutSession, posStationLogin, tabletLogin } from '../services/api/auth';
@@ -42,6 +42,7 @@ type AppSessionValue = {
   clearStationConfig: () => void;
   loginWithPin: (pin: string) => Promise<void>;
   logout: () => void;
+  expireSession: () => void;
 };
 
 type PersistedSession = {
@@ -102,6 +103,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   const [lastSyncCheckAt, setLastSyncCheckAt] = useState<number | null>(null);
   const [deviceId, setDeviceId] = useState('');
   const [deviceLabel, setDeviceLabel] = useState(buildDefaultDeviceLabel());
+  const lifecycleLogoutInFlightRef = useRef(false);
 
   const clearSession = useCallback(() => {
     setToken(null);
@@ -285,6 +287,35 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       });
   }, [apiClient, clearSession, token]);
 
+  const logoutOnAppBackground = useCallback(() => {
+    if (!token || lifecycleLogoutInFlightRef.current) {
+      return;
+    }
+    lifecycleLogoutInFlightRef.current = true;
+    const tokenSnapshot = token;
+    const closeClient = createApiClient({
+      getBaseUrl: () => apiBase,
+      getToken: () => tokenSnapshot,
+    });
+    logoutSession(closeClient)
+      .catch(() => undefined)
+      .finally(() => {
+        clearSession();
+        lifecycleLogoutInFlightRef.current = false;
+      });
+  }, [apiBase, clearSession, token]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'background') {
+        logoutOnAppBackground();
+      }
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [logoutOnAppBackground]);
+
   const refreshSyncStatus = useCallback(async () => {
     if (!token) {
       setSyncStatus('checking');
@@ -327,11 +358,19 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       setSyncStatus('degraded');
       setSyncReason(remoteReason || remoteStatus || 'unknown');
     } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        clearSession();
+        const now = Date.now();
+        setLastSyncCheckAt(now);
+        setSyncStatus('online');
+        setSyncReason('session_expired');
+        return;
+      }
       setLastSyncCheckAt(Date.now());
       setSyncStatus('offline');
       setSyncReason(err instanceof Error ? err.message : 'network_error');
     }
-  }, [apiBase, apiClient, token]);
+  }, [apiBase, apiClient, clearSession, token]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -392,6 +431,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       clearStationConfig,
       loginWithPin,
       logout,
+      expireSession: clearSession,
     }),
     [
       apiBase,
@@ -402,6 +442,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       isHydrated,
       loginWithPin,
       logout,
+      clearSession,
       stationId,
       stationLabel,
       tenantName,
