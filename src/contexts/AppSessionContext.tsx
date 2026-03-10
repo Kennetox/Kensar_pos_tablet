@@ -77,6 +77,17 @@ function generateDeviceId() {
   return `tablet-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
+function buildStationScopedDeviceId(stationEmail: string) {
+  const normalized = stationEmail
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  const suffix = normalized || 'station';
+  return `tablet-${suffix}`;
+}
+
 function getDefaultApiBase() {
   return __DEV__ ? DEFAULT_API_BASE_DEV : DEFAULT_API_BASE_PROD;
 }
@@ -226,13 +237,16 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         throw new ApiError('Ingresa correo y contraseña de estación.', 400);
       }
 
+      const stationScopedDeviceId = buildStationScopedDeviceId(email);
+
       const response = await posStationLogin(apiClient, {
         station_email: email,
         station_password: password,
-        device_id: deviceId,
+        device_id: stationScopedDeviceId,
         device_label: deviceLabel,
       });
 
+      setDeviceId(stationScopedDeviceId);
       setStationId(response.station_id);
       setStationLabel(response.station_label);
       setTenantName(response.tenant_name?.trim() ?? '');
@@ -243,7 +257,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       setTokenIssuedAt(null);
       setUser(null);
     },
-    [apiClient, deviceId, deviceLabel],
+    [apiClient, deviceLabel],
   );
 
   const clearStationConfig = useCallback(() => {

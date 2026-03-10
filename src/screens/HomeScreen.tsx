@@ -319,6 +319,8 @@ function getPaymentBlockedReason(params: {
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const modalKeyboardBehavior = Platform.OS === 'ios' ? 'padding' : 'height';
+  const modalKeyboardOffset = Platform.OS === 'ios' ? 24 : 0;
   const {
     user,
     stationId,
@@ -3099,8 +3101,8 @@ export function HomeScreen() {
         {customerModalOpen ? (
           <KeyboardAvoidingView
             style={styles.quantityOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+            behavior={modalKeyboardBehavior}
+            keyboardVerticalOffset={modalKeyboardOffset}
           >
             <View style={styles.customerCard}>
               <View style={styles.customerHeader}>
@@ -3302,8 +3304,8 @@ export function HomeScreen() {
         {pendingCustomerSelection ? (
           <KeyboardAvoidingView
             style={styles.quantityOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+            behavior={modalKeyboardBehavior}
+            keyboardVerticalOffset={modalKeyboardOffset}
           >
             <View style={styles.customerConfirmCard}>
               <Text style={styles.quantityTitle}>¿Asignar este cliente?</Text>
@@ -3331,8 +3333,8 @@ export function HomeScreen() {
         {discountModalOpen ? (
           <KeyboardAvoidingView
             style={styles.quantityOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+            behavior={modalKeyboardBehavior}
+            keyboardVerticalOffset={modalKeyboardOffset}
           >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>
@@ -3675,8 +3677,8 @@ export function HomeScreen() {
         {surchargeModalOpen ? (
           <KeyboardAvoidingView
             style={styles.quantityOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+            behavior={modalKeyboardBehavior}
+            keyboardVerticalOffset={modalKeyboardOffset}
           >
             <View style={styles.surchargeCard}>
               <Text style={styles.quantityTitle}>Incremento</Text>
@@ -3741,8 +3743,8 @@ export function HomeScreen() {
         {freeSaleReasonModalOpen ? (
           <KeyboardAvoidingView
             style={styles.quantityOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+            behavior={modalKeyboardBehavior}
+            keyboardVerticalOffset={modalKeyboardOffset}
           >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>
@@ -3781,8 +3783,8 @@ export function HomeScreen() {
         {priceChangeProduct ? (
           <KeyboardAvoidingView
             style={styles.quantityOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+            behavior={modalKeyboardBehavior}
+            keyboardVerticalOffset={modalKeyboardOffset}
           >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>Cambiar precio · {priceChangeProduct.name}</Text>
@@ -3819,8 +3821,8 @@ export function HomeScreen() {
         {quantityModalOpen ? (
           <KeyboardAvoidingView
             style={styles.quantityOverlay}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'position'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 24 : 16}
+            behavior={modalKeyboardBehavior}
+            keyboardVerticalOffset={modalKeyboardOffset}
           >
             <View style={styles.quantityCard}>
               <Text style={styles.quantityTitle}>Cambiar cantidad</Text>
@@ -5126,10 +5128,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
+    paddingVertical: 18,
   },
   quantityCard: {
     width: '100%',
     maxWidth: 520,
+    maxHeight: '86%',
     borderRadius: 28,
     borderWidth: 1,
     borderColor: '#33496d',
@@ -5333,6 +5337,7 @@ const styles = StyleSheet.create({
   surchargeCard: {
     width: '100%',
     maxWidth: 700,
+    maxHeight: '86%',
     borderRadius: 28,
     borderWidth: 1,
     borderColor: '#33496d',
