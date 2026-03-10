@@ -383,6 +383,9 @@ export function HomeScreen() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [currentPath, setCurrentPath] = useState<Path>([]);
   const [currentPage, setCurrentPage] = useState(1);
+  const [swipePreviewPage, setSwipePreviewPage] = useState<number | null>(null);
+  const [swipeDirection, setSwipeDirection] = useState<-1 | 0 | 1>(0);
+  const [isCatalogPageAnimating, setIsCatalogPageAnimating] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -459,6 +462,10 @@ export function HomeScreen() {
   const [reservedSaleNumber, setReservedSaleNumber] = useState<number | null>(null);
   const slideAnim = useRef(new Animated.Value(0)).current;
   const toastAnim = useRef(new Animated.Value(0)).current;
+  const pageSwipeTranslateX = useRef(new Animated.Value(0)).current;
+  const previewOffsetX = useRef(new Animated.Value(0)).current;
+  const swipePreviewPageRef = useRef<number | null>(null);
+  const swipeDirectionRef = useRef<-1 | 0 | 1>(0);
   const scannerCooldownRef = useRef(0);
   const catalogVersionRef = useRef<string | null>(null);
   const catalogUpdateAvailableRef = useRef(false);
@@ -1142,10 +1149,21 @@ export function HomeScreen() {
   const totalPages = Math.max(1, Math.ceil(tiles.length / PAGE_SIZE));
   const shouldPaginate = currentPath.length > 0 || search.trim().length > 0;
   const safePage = shouldPaginate ? Math.min(currentPage, totalPages) : 1;
+  const canSwipePages = shouldPaginate && totalPages > 1;
+  const catalogPageWidth = Math.max(320, catalogViewport.width - 24);
+
+  const getPageTiles = useCallback(
+    (page: number) => (shouldPaginate ? tiles.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) : tiles),
+    [shouldPaginate, tiles],
+  );
 
   const pageTiles = useMemo(
-    () => (shouldPaginate ? tiles.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE) : tiles),
-    [safePage, shouldPaginate, tiles],
+    () => getPageTiles(safePage),
+    [getPageTiles, safePage],
+  );
+  const swipePreviewTiles = useMemo(
+    () => (swipePreviewPage ? getPageTiles(swipePreviewPage) : []),
+    [getPageTiles, swipePreviewPage],
   );
 
   const handleCatalogLayout = useCallback((event: LayoutChangeEvent) => {
@@ -1214,6 +1232,151 @@ export function HomeScreen() {
     };
   }, [catalogViewport.height, catalogViewport.width, gridZoom]);
 
+  const clearCatalogSwipePreview = useCallback(() => {
+    swipePreviewPageRef.current = null;
+    swipeDirectionRef.current = 0;
+    setSwipePreviewPage(null);
+    setSwipeDirection(0);
+  }, []);
+
+  const setCatalogSwipePreview = useCallback(
+    (nextPage: number, direction: -1 | 1) => {
+      if (swipePreviewPageRef.current !== nextPage) {
+        swipePreviewPageRef.current = nextPage;
+        setSwipePreviewPage(nextPage);
+      }
+      if (swipeDirectionRef.current !== direction) {
+        swipeDirectionRef.current = direction;
+        setSwipeDirection(direction);
+        previewOffsetX.setValue(direction === -1 ? catalogPageWidth : -catalogPageWidth);
+      }
+    },
+    [catalogPageWidth, previewOffsetX],
+  );
+
+  const settleCatalogSwipe = useCallback(() => {
+    Animated.spring(pageSwipeTranslateX, {
+      toValue: 0,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 0,
+    }).start(() => {
+      clearCatalogSwipePreview();
+    });
+  }, [clearCatalogSwipePreview, pageSwipeTranslateX]);
+
+  const animateToCatalogPage = useCallback(
+    (targetPage: number, direction: -1 | 1) => {
+      if (targetPage < 1 || targetPage > totalPages || isCatalogPageAnimating) {
+        return;
+      }
+      setCatalogSwipePreview(targetPage, direction);
+      setIsCatalogPageAnimating(true);
+      Animated.timing(pageSwipeTranslateX, {
+        toValue: direction === -1 ? -catalogPageWidth : catalogPageWidth,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setCurrentPage(targetPage);
+        }
+        pageSwipeTranslateX.setValue(0);
+        clearCatalogSwipePreview();
+        setIsCatalogPageAnimating(false);
+      });
+    },
+    [
+      catalogPageWidth,
+      clearCatalogSwipePreview,
+      isCatalogPageAnimating,
+      pageSwipeTranslateX,
+      setCatalogSwipePreview,
+      totalPages,
+    ],
+  );
+
+  const catalogSwipePanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onPanResponderGrant: () => {
+          // Ensure no residual offset from an interrupted gesture/animation.
+          pageSwipeTranslateX.stopAnimation((value) => {
+            if (Math.abs(value) > 0.5) {
+              pageSwipeTranslateX.setValue(0);
+            }
+          });
+        },
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gestureState) => {
+          if (!canSwipePages || isCatalogPageAnimating) {
+            return false;
+          }
+          const absDx = Math.abs(gestureState.dx);
+          const absDy = Math.abs(gestureState.dy);
+          return absDx > 14 && absDx > absDy * 1.25;
+        },
+        onPanResponderMove: (_, gestureState) => {
+          if (!canSwipePages || isCatalogPageAnimating) {
+            return;
+          }
+          const rawDx = gestureState.dx;
+          const clampedDx = Math.max(-catalogPageWidth * 0.9, Math.min(catalogPageWidth * 0.9, rawDx));
+          const direction: -1 | 1 = rawDx < 0 ? -1 : 1;
+          const targetPage = direction === -1 ? safePage + 1 : safePage - 1;
+          const hasTarget = targetPage >= 1 && targetPage <= totalPages;
+
+          if (!hasTarget) {
+            pageSwipeTranslateX.setValue(clampedDx * 0.2);
+            clearCatalogSwipePreview();
+            return;
+          }
+
+          setCatalogSwipePreview(targetPage, direction);
+          pageSwipeTranslateX.setValue(clampedDx);
+        },
+        onPanResponderRelease: (_, gestureState) => {
+          if (!canSwipePages || isCatalogPageAnimating) {
+            return;
+          }
+          const direction: -1 | 1 = gestureState.dx < 0 ? -1 : 1;
+          const targetPage = direction === -1 ? safePage + 1 : safePage - 1;
+          const hasTarget = targetPage >= 1 && targetPage <= totalPages;
+          const distanceThreshold = Math.max(74, Math.min(180, catalogPageWidth * 0.2));
+          const velocityThreshold = 0.45;
+          const shouldComplete =
+            hasTarget &&
+            (Math.abs(gestureState.dx) > distanceThreshold || Math.abs(gestureState.vx) > velocityThreshold);
+
+          if (shouldComplete) {
+            animateToCatalogPage(targetPage, direction);
+            return;
+          }
+          settleCatalogSwipe();
+        },
+        onPanResponderEnd: () => {
+          if (!isCatalogPageAnimating) {
+            settleCatalogSwipe();
+          }
+        },
+        onPanResponderTerminate: () => {
+          settleCatalogSwipe();
+        },
+      }),
+    [
+      animateToCatalogPage,
+      canSwipePages,
+      catalogPageWidth,
+      clearCatalogSwipePreview,
+      isCatalogPageAnimating,
+      pageSwipeTranslateX,
+      safePage,
+      setCatalogSwipePreview,
+      settleCatalogSwipe,
+      totalPages,
+    ],
+  );
+
   const dividerPanResponder = useMemo(
     () =>
       PanResponder.create({
@@ -1257,7 +1420,34 @@ export function HomeScreen() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [search, currentPath]);
+    pageSwipeTranslateX.setValue(0);
+    clearCatalogSwipePreview();
+    setIsCatalogPageAnimating(false);
+  }, [clearCatalogSwipePreview, currentPath, pageSwipeTranslateX, search]);
+
+  useEffect(() => {
+    if (swipePreviewPage == null) {
+      return;
+    }
+    if (swipePreviewPage >= 1 && swipePreviewPage <= totalPages) {
+      return;
+    }
+    pageSwipeTranslateX.setValue(0);
+    clearCatalogSwipePreview();
+    setIsCatalogPageAnimating(false);
+  }, [clearCatalogSwipePreview, pageSwipeTranslateX, swipePreviewPage, totalPages]);
+
+  useEffect(() => {
+    if (isCatalogPageAnimating || swipePreviewPage != null || swipeDirection !== 0) {
+      return;
+    }
+    // Final safety net: keep active page anchored in viewport.
+    pageSwipeTranslateX.stopAnimation((value) => {
+      if (Math.abs(value) > 0.5) {
+        pageSwipeTranslateX.setValue(0);
+      }
+    });
+  }, [isCatalogPageAnimating, pageSwipeTranslateX, swipeDirection, swipePreviewPage]);
 
   const userInitials = useMemo(() => {
     const name = user?.name?.trim();
@@ -2464,6 +2654,111 @@ export function HomeScreen() {
     setCurrentPage(1);
   }, []);
 
+  const renderCatalogTile = useCallback((tile: GridTile) => {
+    if (tile.type === 'back') {
+      return (
+        <Pressable
+          key={tile.id}
+          style={[styles.backTile, { width: gridMetrics.tileWidth, height: gridMetrics.tileHeight }]}
+          onPress={() => handleTilePress(tile)}
+        >
+          <Text style={styles.backTileText}>← Volver</Text>
+        </Pressable>
+      );
+    }
+
+    if (tile.type === 'group') {
+      return (
+        <Pressable
+          key={tile.id}
+          style={[
+            styles.categoryTile,
+            {
+              width: gridMetrics.tileWidth,
+              height: gridMetrics.tileHeight,
+              padding: gridMetrics.tilePadding,
+            },
+            tile.color ? { backgroundColor: tile.color } : null,
+          ]}
+          onPress={() => handleTilePress(tile)}
+        >
+          {tile.imageUrl ? (
+            <Image
+              source={{ uri: tile.imageUrl }}
+              style={[
+                styles.tileImage,
+                {
+                  width: gridMetrics.imageWidth,
+                  height: gridMetrics.imageHeight,
+                },
+              ]}
+              resizeMode="contain"
+            />
+          ) : null}
+          <Text
+            style={[styles.categoryTileLabel, { fontSize: gridMetrics.labelFontSize }]}
+            numberOfLines={2}
+            ellipsizeMode="tail"
+          >
+            {tile.label}
+          </Text>
+        </Pressable>
+      );
+    }
+
+    const product = tile.product;
+    const productImage = resolveAssetUrl(product.image_thumb_url ?? product.image_url);
+    const tileStyle = product.tile_color ? { backgroundColor: product.tile_color } : null;
+
+    return (
+      <Pressable
+        key={tile.id}
+        style={[
+          styles.productTile,
+          {
+            width: gridMetrics.tileWidth,
+            height: gridMetrics.tileHeight,
+            padding: gridMetrics.tilePadding,
+          },
+          tileStyle,
+        ]}
+        onPress={() => handleTilePress(tile)}
+      >
+        <View style={styles.productTileMain}>
+          {productImage ? (
+            <Image
+              source={{ uri: productImage }}
+              style={[
+                styles.tileImage,
+                {
+                  width: gridMetrics.imageWidth,
+                  height: gridMetrics.imageHeight,
+                },
+              ]}
+              resizeMode="contain"
+            />
+          ) : null}
+          <Text
+            style={[styles.productTileLabel, { fontSize: gridMetrics.labelFontSize - 1 }]}
+            numberOfLines={2}
+            ellipsizeMode="tail"
+          >
+            {product.name}
+          </Text>
+        </View>
+        <View style={styles.productTileFooter}>
+          <Text
+            style={[styles.productTilePrice, { fontSize: gridMetrics.priceFontSize }]}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            {formatMoney(product.price)}
+          </Text>
+        </View>
+      </Pressable>
+    );
+  }, [gridMetrics, handleTilePress, resolveAssetUrl]);
+
   const handleOpenSaleDocument = useCallback(
     async (documentType: 'ticket' | 'invoice') => {
       if (!successSale) {
@@ -2848,117 +3143,44 @@ export function HomeScreen() {
               ) : null}
 
               {!error ? (
-                <View style={styles.tileGrid}>
-                  {pageTiles.map((tile) => {
-                  if (tile.type === 'back') {
-                      return (
-                        <Pressable
-                          key={tile.id}
-                          style={[styles.backTile, { width: gridMetrics.tileWidth, height: gridMetrics.tileHeight }]}
-                          onPress={() => handleTilePress(tile)}
-                        >
-                          <Text style={styles.backTileText}>← Volver</Text>
-                        </Pressable>
-                      );
-                    }
-
-                    if (tile.type === 'group') {
-                      return (
-                        <Pressable
-                          key={tile.id}
-                          style={[
-                            styles.categoryTile,
-                            {
-                              width: gridMetrics.tileWidth,
-                              height: gridMetrics.tileHeight,
-                              padding: gridMetrics.tilePadding,
-                            },
-                            tile.color ? { backgroundColor: tile.color } : null,
-                          ]}
-                          onPress={() => handleTilePress(tile)}
-                        >
-                          {tile.imageUrl ? (
-                            <Image
-                              source={{ uri: tile.imageUrl }}
-                              style={[
-                                styles.tileImage,
-                                {
-                                  width: gridMetrics.imageWidth,
-                                  height: gridMetrics.imageHeight,
-                                },
-                              ]}
-                              resizeMode="contain"
-                            />
-                          ) : null}
-                          <Text
-                            style={[styles.categoryTileLabel, { fontSize: gridMetrics.labelFontSize }]}
-                            numberOfLines={2}
-                            ellipsizeMode="tail"
-                          >
-                            {tile.label}
-                          </Text>
-                        </Pressable>
-                      );
-                    }
-
-                    const product = tile.product;
-                    const productImage = resolveAssetUrl(product.image_thumb_url ?? product.image_url);
-                    const tileStyle = product.tile_color ? { backgroundColor: product.tile_color } : null;
-
-                    return (
-                      <Pressable
-                        key={tile.id}
-                        style={[
-                          styles.productTile,
-                          {
-                            width: gridMetrics.tileWidth,
-                            height: gridMetrics.tileHeight,
-                            padding: gridMetrics.tilePadding,
-                          },
-                          tileStyle,
-                        ]}
-                        onPress={() => handleTilePress(tile)}
-                      >
-                        <View style={styles.productTileMain}>
-                          {productImage ? (
-                            <Image
-                              source={{ uri: productImage }}
-                              style={[
-                                styles.tileImage,
-                                {
-                                  width: gridMetrics.imageWidth,
-                                  height: gridMetrics.imageHeight,
-                                },
-                              ]}
-                              resizeMode="contain"
-                            />
-                          ) : null}
-                          <Text
-                            style={[styles.productTileLabel, { fontSize: gridMetrics.labelFontSize - 1 }]}
-                            numberOfLines={2}
-                            ellipsizeMode="tail"
-                          >
-                            {product.name}
-                          </Text>
+                <View
+                  style={styles.tilePagerViewport}
+                  {...(canSwipePages ? catalogSwipePanResponder.panHandlers : {})}
+                >
+                  <Animated.View
+                    style={[
+                      styles.tilePagerPage,
+                      {
+                        transform: [{ translateX: pageSwipeTranslateX }],
+                      },
+                    ]}
+                  >
+                    <View style={styles.tileGrid}>
+                      {pageTiles.map(renderCatalogTile)}
+                      {!isLoading && pageTiles.length === 0 ? (
+                        <View style={styles.stateCard}>
+                          <Text style={styles.stateTitle}>No hay elementos para mostrar</Text>
+                          <Text style={styles.stateBody}>Prueba otra búsqueda o vuelve al inicio.</Text>
                         </View>
-                        <View style={styles.productTileFooter}>
-                          <Text
-                            style={[styles.productTilePrice, { fontSize: gridMetrics.priceFontSize }]}
-                            numberOfLines={1}
-                            ellipsizeMode="tail"
-                          >
-                            {formatMoney(product.price)}
-                          </Text>
-                        </View>
-                      </Pressable>
-                    );
-                  })}
-
-                  {!isLoading && pageTiles.length === 0 ? (
-                    <View style={styles.stateCard}>
-                      <Text style={styles.stateTitle}>No hay elementos para mostrar</Text>
-                      <Text style={styles.stateBody}>Prueba otra búsqueda o vuelve al inicio.</Text>
+                      ) : null}
                     </View>
+                  </Animated.View>
+
+                  {swipePreviewPage && swipeDirection !== 0 ? (
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[
+                        styles.tilePagerPage,
+                        styles.tilePagerPageAbsolute,
+                        {
+                          transform: [{ translateX: Animated.add(pageSwipeTranslateX, previewOffsetX) }],
+                        },
+                      ]}
+                    >
+                      <View style={styles.tileGrid}>
+                        {swipePreviewTiles.map(renderCatalogTile)}
+                      </View>
+                    </Animated.View>
                   ) : null}
                 </View>
               ) : null}
@@ -2981,14 +3203,18 @@ export function HomeScreen() {
                     <Pressable
                       style={[styles.zoomButton, safePage <= 1 ? styles.zoomButtonDisabled : null]}
                       disabled={safePage <= 1}
-                      onPress={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                      onPress={() => {
+                        animateToCatalogPage(Math.max(1, safePage - 1), 1);
+                      }}
                     >
                       <Text style={styles.zoomButtonText}>‹</Text>
                     </Pressable>
                     <Pressable
                       style={[styles.zoomButton, safePage >= totalPages ? styles.zoomButtonDisabled : null]}
                       disabled={safePage >= totalPages}
-                      onPress={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                      onPress={() => {
+                        animateToCatalogPage(Math.min(totalPages, safePage + 1), -1);
+                      }}
                     >
                       <Text style={styles.zoomButtonText}>›</Text>
                     </Pressable>
@@ -4771,6 +4997,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 12,
     paddingBottom: 12,
+  },
+  tilePagerViewport: {
+    width: '100%',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  tilePagerPage: {
+    width: '100%',
+  },
+  tilePagerPageAbsolute: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
   },
   tileGrid: {
     flexDirection: 'row',
