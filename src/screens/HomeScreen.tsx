@@ -3015,13 +3015,24 @@ export function HomeScreen() {
           <View style={styles.contentColumn}>
             <View style={styles.searchWrap}>
               <View style={styles.searchRow}>
-                <TextInput
-                  value={search}
-                  onChangeText={setSearch}
-                  placeholder="Buscar productos por nombre, codigo o codigo de barras"
-                  placeholderTextColor="#7282a3"
-                  style={styles.searchInput}
-                />
+                <View style={styles.searchInputWrap}>
+                  <TextInput
+                    value={search}
+                    onChangeText={setSearch}
+                    placeholder="Buscar productos por nombre, codigo o codigo de barras"
+                    placeholderTextColor="#7282a3"
+                    style={styles.searchInput}
+                  />
+                  {search.length > 0 ? (
+                    <Pressable
+                      style={styles.searchClearButton}
+                      onPress={() => setSearch('')}
+                      hitSlop={8}
+                    >
+                      <Text style={styles.searchClearButtonText}>×</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
                 <Pressable
                   style={styles.searchScannerButton}
                   onPress={() => { handleOpenScanner().catch(() => undefined); }}
@@ -4745,8 +4756,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
-  searchInput: {
+  searchInputWrap: {
     flex: 1,
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  searchInput: {
     minHeight: 54,
     borderRadius: 14,
     borderWidth: 1,
@@ -4755,6 +4770,25 @@ const styles = StyleSheet.create({
     color: '#f8fbff',
     fontSize: 16,
     paddingHorizontal: 20,
+    paddingRight: 56,
+  },
+  searchClearButton: {
+    position: 'absolute',
+    right: 12,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#2f4b75',
+    backgroundColor: '#173056',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchClearButtonText: {
+    color: '#d8e8ff',
+    fontSize: 18,
+    lineHeight: 20,
+    fontWeight: '800',
   },
   searchScannerButton: {
     width: 54,
