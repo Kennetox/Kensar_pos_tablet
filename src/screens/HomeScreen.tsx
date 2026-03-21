@@ -12,6 +12,7 @@ import {
   Linking,
   NativeScrollEvent,
   NativeSyntheticEvent,
+  TextInputSubmitEditingEventData,
   PanResponder,
   Platform,
   Pressable,
@@ -1559,6 +1560,58 @@ export function HomeScreen() {
     setSelectedCartId(product.id);
   }, []);
 
+  const handleBarcodeLookup = useCallback((rawCode: string) => {
+    const scannedRaw = normalizeBarcode(rawCode);
+    if (!scannedRaw) {
+      setSearch('');
+      return;
+    }
+
+    const scannedWithoutLeadingZeros = scannedRaw.replace(/^0+/, '');
+    const product = products.find((candidate) => {
+      const barcode = normalizeBarcode(candidate.barcode);
+      if (!barcode) {
+        return false;
+      }
+      const barcodeNoZeros = barcode.replace(/^0+/, '');
+      return barcode === scannedRaw || barcodeNoZeros === scannedWithoutLeadingZeros;
+    });
+
+    setSearch('');
+    setCurrentPath([]);
+    setCurrentPage(1);
+
+    if (!product) {
+      showActionToast(`No se encontraron productos con el código: ${rawCode.trim()}`, 2600, 'error');
+      return;
+    }
+
+    addProductToCart(product);
+    showActionToast(`Producto agregado: ${product.name}`);
+  }, [addProductToCart, products, showActionToast]);
+
+  const handleSearchInputChange = useCallback((value: string) => {
+    if (!value.includes('\n') && !value.includes('\r')) {
+      setSearch(value);
+      return;
+    }
+    const normalized = value.replace(/[\r\n]+/g, '').trim();
+    if (!normalized) {
+      setSearch('');
+      return;
+    }
+    handleBarcodeLookup(normalized);
+  }, [handleBarcodeLookup]);
+
+  const handleSearchSubmit = useCallback((event: NativeSyntheticEvent<TextInputSubmitEditingEventData>) => {
+    const value = event.nativeEvent.text?.trim() ?? '';
+    if (!value) {
+      setSearch('');
+      return;
+    }
+    handleBarcodeLookup(value);
+  }, [handleBarcodeLookup]);
+
   const handleCodeScanned = useCallback((codes: Code[]) => {
     if (!scannerOpen || !codes.length) {
       return;
@@ -1573,36 +1626,9 @@ export function HomeScreen() {
     }
     scannerCooldownRef.current = now;
 
-    const scannedRaw = normalizeBarcode(firstReadable.value);
-    if (!scannedRaw) {
-      return;
-    }
-    const scannedWithoutLeadingZeros = scannedRaw.replace(/^0+/, '');
-    const product = products.find((candidate) => {
-      const barcode = normalizeBarcode(candidate.barcode);
-      if (!barcode) {
-        return false;
-      }
-      const barcodeNoZeros = barcode.replace(/^0+/, '');
-      return barcode === scannedRaw || barcodeNoZeros === scannedWithoutLeadingZeros;
-    });
-
-    if (!product) {
-      setScannerOpen(false);
-      setSearch('');
-      setCurrentPath([]);
-      setCurrentPage(1);
-      showActionToast(`No se encontraron productos con el código: ${firstReadable.value}`, 2600, 'error');
-      return;
-    }
-
     setScannerOpen(false);
-    setSearch('');
-    setCurrentPath([]);
-    setCurrentPage(1);
-    addProductToCart(product);
-    showActionToast(`Producto agregado: ${product.name}`);
-  }, [addProductToCart, products, scannerOpen, showActionToast]);
+    handleBarcodeLookup(firstReadable.value);
+  }, [handleBarcodeLookup, scannerOpen]);
 
   const codeScanner = useCodeScanner({
     codeTypes: ['ean-13', 'ean-8', 'code-128', 'code-39', 'upc-a', 'upc-e', 'qr'],
@@ -3018,7 +3044,10 @@ export function HomeScreen() {
                 <View style={styles.searchInputWrap}>
                   <TextInput
                     value={search}
-                    onChangeText={setSearch}
+                    onChangeText={handleSearchInputChange}
+                    onSubmitEditing={handleSearchSubmit}
+                    blurOnSubmit={false}
+                    returnKeyType="done"
                     placeholder="Buscar productos por nombre, codigo o codigo de barras"
                     placeholderTextColor="#7282a3"
                     style={styles.searchInput}

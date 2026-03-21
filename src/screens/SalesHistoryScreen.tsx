@@ -149,7 +149,7 @@ export function SalesHistoryScreen({
             <Text style={styles.kicker}>Historial de hoy</Text>
             <Text style={styles.title}>Ventas del día</Text>
             <Text style={styles.meta}>Fecha {todayKey} · Incluye ventas de la tablet y estación principal</Text>
-            <Text style={styles.meta}>Hora {bogotaTimeLabel || '--:--:--'} (Bogotá)</Text>
+            <Text style={styles.meta}>Hora {bogotaTimeLabel || '--:--:--'} </Text>
             <Text style={styles.meta}>Mostrando {items.length} de {total}</Text>
           </View>
           <View style={styles.headerActions}>
