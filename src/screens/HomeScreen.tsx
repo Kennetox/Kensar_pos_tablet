@@ -39,8 +39,10 @@ import {
 } from '../services/api/catalog';
 import {
   cancelSaleReservation,
+  createPrintJob,
   createSale,
   fetchNextSaleNumber,
+  fetchPrintJob,
   reserveSaleNumber,
 } from '../services/api/pos';
 import {
@@ -427,6 +429,11 @@ export function HomeScreen() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [saleNotice, setSaleNotice] = useState<string | null>(null);
   const [successSale, setSuccessSale] = useState<SuccessSaleSummary | null>(null);
+  const [ticketPrintStatus, setTicketPrintStatus] = useState<
+    'idle' | 'requesting' | 'queued' | 'accepted' | 'failed'
+  >('idle');
+  const printRequestInFlightRef = useRef(false);
+  const ticketPrintRequestRef = useRef<{ saleId: number; requestId: string } | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<PosCustomerRecord | null>(null);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [customerMode, setCustomerMode] = useState<'list' | 'new'>('list');
@@ -2706,12 +2713,67 @@ export function HomeScreen() {
         showActionToast('Sesión expirada. Inicia sesión nuevamente.', 2600, 'error');
         return;
       }
+      if (documentType === 'ticket') {
+        if (printRequestInFlightRef.current) {
+          return;
+        }
+        if (!stationId.trim()) {
+          showActionToast('La tablet no tiene una estación configurada.', 2600, 'error');
+          return;
+        }
+        printRequestInFlightRef.current = true;
+        setTicketPrintStatus('requesting');
+        try {
+          const priorRequest = ticketPrintRequestRef.current;
+          const requestId =
+            priorRequest?.saleId === successSale.saleId
+              ? priorRequest.requestId
+              : `tablet-${successSale.saleId}-${Date.now()}-${Math.random()
+                  .toString(36)
+                  .slice(2, 10)}`;
+          ticketPrintRequestRef.current = { saleId: successSale.saleId, requestId };
+          let job = await createPrintJob(apiClient, {
+            sale_id: successSale.saleId,
+            station_id: stationId.trim(),
+            request_id: requestId,
+          });
+          setTicketPrintStatus(job.status === 'accepted' ? 'accepted' : 'queued');
+          showActionToast('Ticket enviado a la cola de la caja.');
+
+          for (let attempt = 0; attempt < 15; attempt += 1) {
+            if (job.status === 'accepted') {
+              ticketPrintRequestRef.current = null;
+              setTicketPrintStatus('accepted');
+              showActionToast('La caja aceptó el ticket para impresión.');
+              return;
+            }
+            if (job.status === 'failed' || job.status === 'expired') {
+              ticketPrintRequestRef.current = null;
+              setTicketPrintStatus('failed');
+              throw new Error(job.last_error || 'La caja no pudo imprimir el ticket.');
+            }
+            await new Promise<void>(resolve => setTimeout(() => resolve(), 1000));
+            job = await fetchPrintJob(apiClient, job.id);
+          }
+          setTicketPrintStatus('queued');
+          showActionToast('El ticket sigue en cola. Puedes continuar usando el POS.');
+        } catch (err) {
+          setTicketPrintStatus('failed');
+          showActionToast(
+            err instanceof Error ? err.message : 'No se pudo enviar el ticket a la caja.',
+            3000,
+            'error',
+          );
+        } finally {
+          printRequestInFlightRef.current = false;
+        }
+        return;
+      }
       try {
         const base = apiBase.replace(/\/$/, '');
         const url =
           `${base}/pos/sales/${successSale.saleId}/document-view` +
           `?document_type=${encodeURIComponent(documentType)}` +
-          `${documentType === 'ticket' ? '&layout=thermal' : ''}` +
           `&access_token=${encodeURIComponent(token)}`;
         const opened = await Linking.openURL(url).then(() => true).catch(() => false);
         if (!opened) {
@@ -2727,8 +2789,14 @@ export function HomeScreen() {
         );
       }
     },
-    [apiBase, successSale, showActionToast, token],
+    [apiBase, apiClient, stationId, successSale, showActionToast, token],
   );
+
+  useEffect(() => {
+    setTicketPrintStatus('idle');
+    printRequestInFlightRef.current = false;
+    ticketPrintRequestRef.current = null;
+  }, [successSale?.saleId]);
 
   const handleSendSaleDocumentByEmail = useCallback(
     async (documentType: 'ticket' | 'invoice') => {
@@ -3816,12 +3884,28 @@ export function HomeScreen() {
 
               <View style={styles.successActions}>
                 <Pressable
-                  style={styles.successActionMock}
+                  style={[
+                    styles.successActionMock,
+                    ticketPrintStatus === 'requesting' || ticketPrintStatus === 'queued'
+                      ? styles.successActionDisabled
+                      : null,
+                  ]}
+                  disabled={ticketPrintStatus === 'requesting' || ticketPrintStatus === 'queued'}
                   onPress={() => {
                     handleOpenSaleDocument('ticket').catch(() => undefined);
                   }}
                 >
-                  <Text style={styles.successActionMockText}>Imprimir ticket</Text>
+                  <Text style={styles.successActionMockText}>
+                    {ticketPrintStatus === 'requesting'
+                      ? 'Enviando…'
+                      : ticketPrintStatus === 'queued'
+                        ? 'Ticket en cola'
+                        : ticketPrintStatus === 'accepted'
+                          ? 'Imprimir otra copia'
+                          : ticketPrintStatus === 'failed'
+                            ? 'Reintentar impresión'
+                            : 'Imprimir ticket'}
+                  </Text>
                 </Pressable>
                 <Pressable
                   style={styles.successActionMock}
@@ -5497,6 +5581,9 @@ const styles = StyleSheet.create({
     color: '#e6f0ff',
     fontSize: 15,
     fontWeight: '700',
+  },
+  successActionDisabled: {
+    opacity: 0.55,
   },
   successActionDone: {
     minHeight: 56,

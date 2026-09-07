@@ -92,6 +92,23 @@ export type SaleDocumentResponse = {
   document_html: string;
 };
 
+export type PosPrintJob = {
+  id: number;
+  sale_id: number;
+  source_station_id: string;
+  target_station_id: string;
+  request_id: string;
+  document_type: 'ticket';
+  status: 'queued' | 'processing' | 'accepted' | 'failed' | 'expired';
+  attempt_count: number;
+  last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+  submitted_at?: string | null;
+  completed_at?: string | null;
+  expires_at: string;
+};
+
 export function fetchNextSaleNumber(client: ApiClient, posId?: string) {
   const query = posId ? `?pos_id=${encodeURIComponent(posId)}` : '';
   return client.get<NextSaleNumberResponse>(`/pos/sales/next-number${query}`);
@@ -112,6 +129,20 @@ export function cancelSaleReservation(client: ApiClient, reservationId: number) 
 
 export function createSale(client: ApiClient, payload: SaleCreatePayload) {
   return client.post<SaleRead>('/pos/sales', payload);
+}
+
+export function createPrintJob(
+  client: ApiClient,
+  payload: { sale_id: number; station_id: string; request_id: string },
+) {
+  return client.post<PosPrintJob>('/pos/print-jobs', {
+    ...payload,
+    document_type: 'ticket',
+  });
+}
+
+export function fetchPrintJob(client: ApiClient, jobId: number) {
+  return client.get<PosPrintJob>(`/pos/print-jobs/${jobId}`);
 }
 
 export function fetchSalesHistoryPage(
