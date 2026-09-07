@@ -35,6 +35,8 @@ export type SaleCreatePayload = {
   total: number;
   paid_amount: number;
   change_amount: number;
+  cart_discount_value?: number;
+  cart_discount_percent?: number;
   items: SaleItemPayload[];
   payments?: { method: string; amount: number }[];
   surcharge_amount?: number;
@@ -47,6 +49,7 @@ export type SaleCreatePayload = {
   customer_id?: number;
   due_date?: string;
   station_id?: string;
+  client_request_id?: string;
 };
 
 export type SaleRead = {
@@ -59,9 +62,16 @@ export type SaleRead = {
   paid_amount: number;
   change_amount: number;
   payment_method: string;
+  surcharge_amount?: number | null;
+  surcharge_label?: string | null;
   sale_number?: number;
   document_number?: string | null;
   has_cash_payment?: boolean;
+  is_separated?: boolean;
+  initial_payment_method?: string | null;
+  initial_payment_amount?: number | null;
+  balance?: number | null;
+  separated_status?: string | null;
   notes?: string | null;
   items?: Array<{
     id?: number;
@@ -71,6 +81,38 @@ export type SaleRead = {
     total?: number;
     discount?: number;
     line_discount_value?: number;
+  }>;
+};
+
+export type SeparatedOrderRead = {
+  id: number;
+  sale_id: number;
+  sale_number?: number | null;
+  sale_document_number: string;
+  customer_id?: number | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
+  total_amount: number;
+  initial_payment: number;
+  balance: number;
+  due_date?: string | null;
+  status: string;
+  notes?: string | null;
+  created_at: string;
+  surcharge_amount?: number | null;
+  surcharge_label?: string | null;
+  initial_payments?: Array<{
+    id: number;
+    method: string;
+    amount: number;
+    paid_at?: string | null;
+  }>;
+  payments?: Array<{
+    id: number;
+    method: string;
+    amount: number;
+    paid_at: string;
   }>;
 };
 
@@ -129,6 +171,10 @@ export function cancelSaleReservation(client: ApiClient, reservationId: number) 
 
 export function createSale(client: ApiClient, payload: SaleCreatePayload) {
   return client.post<SaleRead>('/pos/sales', payload);
+}
+
+export function createSeparatedOrder(client: ApiClient, payload: SaleCreatePayload) {
+  return client.post<SeparatedOrderRead>('/separated-orders', payload);
 }
 
 export function createPrintJob(

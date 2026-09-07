@@ -1,15 +1,21 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { createApiClient } from '../services/api/client';
-import { fetchSalesHistoryPage, type SaleRead } from '../services/api/pos';
+import {
+  createPrintJob,
+  fetchPrintJob,
+  fetchSalesHistoryPage,
+  type SaleRead,
+} from '../services/api/pos';
 import type { PaymentMethodRecord } from '../services/api/paymentMethods';
 
 type ApiClient = ReturnType<typeof createApiClient>;
 
 type SalesHistoryScreenProps = {
   apiClient: ApiClient;
+  stationId: string;
   paymentMethods: PaymentMethodRecord[];
   onBack: () => void;
   onShowToast: (message: string, duration?: number, tone?: 'info' | 'error') => void;
@@ -65,6 +71,7 @@ function getBogotaDateKeyFromIso(value?: string | null) {
 
 export function SalesHistoryScreen({
   apiClient,
+  stationId,
   paymentMethods,
   onBack,
   onShowToast,
@@ -75,6 +82,72 @@ export function SalesHistoryScreen({
   const [items, setItems] = useState<SaleRead[]>([]);
   const [total, setTotal] = useState(0);
   const [bogotaTimeLabel, setBogotaTimeLabel] = useState('');
+  const [printStatuses, setPrintStatuses] = useState<
+    Record<number, 'requesting' | 'queued' | 'accepted' | 'failed'>
+  >({});
+  const printRequestIdsRef = useRef<Record<number, string>>({});
+
+  const updatePrintStatus = useCallback(
+    (saleId: number, status: 'requesting' | 'queued' | 'accepted' | 'failed') => {
+      setPrintStatuses(current => ({ ...current, [saleId]: status }));
+    },
+    [],
+  );
+
+  const handleReprintTicket = useCallback(
+    async (sale: SaleRead) => {
+      const currentStatus = printStatuses[sale.id];
+      if (currentStatus === 'requesting' || currentStatus === 'queued') {
+        return;
+      }
+      const cleanStationId = stationId.trim();
+      if (!cleanStationId) {
+        onShowToast('La tablet no tiene una estación configurada.', 2600, 'error');
+        return;
+      }
+
+      updatePrintStatus(sale.id, 'requesting');
+      try {
+        const requestId =
+          printRequestIdsRef.current[sale.id] ??
+          `tablet-reprint-${sale.id}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        printRequestIdsRef.current[sale.id] = requestId;
+        let job = await createPrintJob(apiClient, {
+          sale_id: sale.id,
+          station_id: cleanStationId,
+          request_id: requestId,
+        });
+        updatePrintStatus(sale.id, job.status === 'accepted' ? 'accepted' : 'queued');
+        onShowToast('Ticket enviado a la cola de la caja.');
+
+        for (let attempt = 0; attempt < 15; attempt += 1) {
+          if (job.status === 'accepted') {
+            delete printRequestIdsRef.current[sale.id];
+            updatePrintStatus(sale.id, 'accepted');
+            onShowToast('La caja aceptó el ticket para impresión.');
+            return;
+          }
+          if (job.status === 'failed' || job.status === 'expired') {
+            delete printRequestIdsRef.current[sale.id];
+            updatePrintStatus(sale.id, 'failed');
+            throw new Error(job.last_error || 'La caja no pudo imprimir el ticket.');
+          }
+          await new Promise<void>(resolve => setTimeout(() => resolve(), 1000));
+          job = await fetchPrintJob(apiClient, job.id);
+        }
+        updatePrintStatus(sale.id, 'queued');
+        onShowToast('El ticket sigue en cola. Puedes continuar usando el POS.');
+      } catch (err) {
+        updatePrintStatus(sale.id, 'failed');
+        onShowToast(
+          err instanceof Error ? err.message : 'No se pudo enviar el ticket a la caja.',
+          3000,
+          'error',
+        );
+      }
+    },
+    [apiClient, onShowToast, printStatuses, stationId, updatePrintStatus],
+  );
 
   const resolvePaymentMethodName = useCallback(
     (method?: string | null) => {
@@ -182,7 +255,10 @@ export function SalesHistoryScreen({
           ) : items.length === 0 ? (
             <Text style={styles.stateText}>No hay ventas registradas hoy.</Text>
           ) : (
-            items.map((sale) => (
+            items.map((sale) => {
+              const printStatus = printStatuses[sale.id];
+              const printPending = printStatus === 'requesting' || printStatus === 'queued';
+              return (
               <View key={sale.id} style={styles.saleCard}>
                 <View style={styles.saleHeader}>
                   <View style={styles.saleHeaderMain}>
@@ -193,19 +269,45 @@ export function SalesHistoryScreen({
                       {formatHistoryDateTime(sale.created_at)} · {sale.vendor_name?.trim() || 'Sin vendedor'}
                     </Text>
                     <Text style={styles.saleMeta}>Método: {resolvePaymentMethodName(sale.payment_method)}</Text>
+                    {sale.is_separated ? (
+                      <View style={styles.separatedBadge}>
+                        <Text style={styles.separatedBadgeText}>VENTA POR SEPARADO</Text>
+                      </View>
+                    ) : null}
                     <View style={styles.stationBadge}>
                       <Text style={styles.stationBadgeText}>{sale.pos_name?.trim() || 'POS sin estación'}</Text>
                     </View>
                   </View>
                   <View style={styles.saleHeaderSide}>
                     <Text style={styles.saleAmount}>{formatMoney(sale.total ?? 0)}</Text>
+                    {sale.is_separated ? (
+                      <View style={styles.separatedAmounts}>
+                        <Text style={styles.separatedAmountText}>
+                          Abono inicial: {formatMoney(sale.initial_payment_amount ?? sale.paid_amount ?? 0)}
+                        </Text>
+                        <Text style={styles.separatedBalanceText}>
+                          Pendiente: {formatMoney(sale.balance ?? 0)}
+                        </Text>
+                      </View>
+                    ) : null}
                     <Pressable
-                      style={styles.mockButton}
+                      style={[styles.mockButton, printPending ? styles.mockButtonDisabled : null]}
+                      disabled={printPending}
                       onPress={() => {
-                        onShowToast('Reimpresión de ticket pendiente de implementación.');
+                        handleReprintTicket(sale).catch(() => undefined);
                       }}
                     >
-                      <Text style={styles.mockButtonText}>Reimprimir ticket</Text>
+                      <Text style={styles.mockButtonText}>
+                        {printStatus === 'requesting'
+                          ? 'Enviando…'
+                          : printStatus === 'queued'
+                            ? 'Ticket en cola'
+                            : printStatus === 'accepted'
+                              ? 'Imprimir otra copia'
+                              : printStatus === 'failed'
+                                ? 'Reintentar impresión'
+                                : 'Reimprimir ticket'}
+                      </Text>
                     </Pressable>
                   </View>
                 </View>
@@ -238,7 +340,8 @@ export function SalesHistoryScreen({
                   )}
                 </View>
               </View>
-            ))
+              );
+            })
           )}
         </ScrollView>
       </View>
@@ -387,6 +490,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
+  separatedBadge: {
+    marginTop: 7,
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: '#19d295',
+    borderRadius: 999,
+    backgroundColor: '#0d3140',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  separatedBadgeText: {
+    color: '#67e8b2',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  separatedAmounts: {
+    alignItems: 'flex-end',
+    marginTop: 4,
+    marginBottom: 5,
+  },
+  separatedAmountText: {
+    color: '#86efac',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  separatedBalanceText: {
+    color: '#fcd34d',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
+  },
   stationBadgeText: {
     color: '#dbe8fb',
     fontSize: 11,
@@ -415,6 +550,9 @@ const styles = StyleSheet.create({
     color: '#e6f0ff',
     fontSize: 12,
     fontWeight: '700',
+  },
+  mockButtonDisabled: {
+    opacity: 0.55,
   },
   itemsWrap: {
     paddingHorizontal: 12,

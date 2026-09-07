@@ -27,6 +27,7 @@ export type PaymentCartItemPreview = {
   lineDiscountValue: number;
   lineTotal: number;
   freeSaleReason?: string;
+  reasonLabel?: string;
 };
 
 type PaymentPageProps = {
@@ -48,6 +49,7 @@ type PaymentPageProps = {
     phone?: string | null;
     email?: string | null;
     taxId?: string | null;
+    address?: string | null;
   } | null;
   paymentMethods: PaymentMethodRecord[];
   selectedMethod: string;
@@ -139,6 +141,13 @@ export function PaymentPage({
 }: PaymentPageProps) {
   const insets = useSafeAreaInsets();
   const selectedLine = multipleLines.find((line) => line.id === selectedLineId) ?? multipleLines[0] ?? null;
+  const isSeparatedSelection =
+    mode === 'single' ? selectedMethod === 'separado' : selectedLine?.method === 'separado';
+  const separatedCustomerReady = Boolean(
+    selectedCustomer?.name?.trim() &&
+      [selectedCustomer.phone, selectedCustomer.email, selectedCustomer.taxId, selectedCustomer.address]
+        .some((value) => Boolean(value?.trim())),
+  );
 
   return (
     <View style={styles.root}>
@@ -201,7 +210,9 @@ export function PaymentPage({
                   <Text style={styles.leftItemDiscount}>Descuento -{formatMoney(item.lineDiscountValue)}</Text>
                 ) : null}
                 {item.freeSaleReason?.trim() ? (
-                  <Text style={styles.leftItemReason}>Motivo venta libre: {item.freeSaleReason.trim()}</Text>
+                  <Text style={styles.leftItemReason}>
+                    {item.reasonLabel?.trim() || 'Motivo'}: {item.freeSaleReason.trim()}
+                  </Text>
                 ) : null}
               </View>
             ))}
@@ -290,6 +301,25 @@ export function PaymentPage({
                 ? 'Ajusta el monto recibido y agrega notas antes de confirmar.'
                 : 'Ajusta cada línea y revisa el total antes de confirmar.'}
             </Text>
+
+            {isSeparatedSelection ? (
+              <View style={styles.separatedNotice}>
+                <Text style={styles.separatedNoticeTitle}>VENTA POR SEPARADO</Text>
+                <Text style={styles.separatedNoticeText}>
+                  El monto que registres se aplicará como abono inicial y el resto quedará como saldo pendiente.
+                </Text>
+                <Text
+                  style={[
+                    styles.separatedCustomerState,
+                    separatedCustomerReady ? styles.separatedCustomerStateReady : null,
+                  ]}
+                >
+                  {separatedCustomerReady
+                    ? `Cliente vinculado: ${selectedCustomer?.name}`
+                    : 'Debes vincular un cliente con teléfono u otro dato adicional.'}
+                </Text>
+              </View>
+            ) : null}
 
             <View style={styles.card}>
               <View style={styles.cardRow}>
@@ -798,6 +828,36 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: '#1a2f4f',
+  },
+  separatedNotice: {
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#19d295',
+    borderRadius: 12,
+    backgroundColor: '#0b302f',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  separatedNoticeTitle: {
+    color: '#67e8b2',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.1,
+  },
+  separatedNoticeText: {
+    color: '#d9f8ef',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 5,
+  },
+  separatedCustomerState: {
+    color: '#fda4af',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 6,
+  },
+  separatedCustomerStateReady: {
+    color: '#86efac',
   },
   optionWrap: {
     flexDirection: 'row',

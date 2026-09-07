@@ -41,9 +41,13 @@ import {
   cancelSaleReservation,
   createPrintJob,
   createSale,
+  createSeparatedOrder,
   fetchNextSaleNumber,
   fetchPrintJob,
   reserveSaleNumber,
+  type SaleCreatePayload,
+  type SaleRead,
+  type SeparatedOrderRead,
 } from '../services/api/pos';
 import {
   DEFAULT_PAYMENT_METHODS,
@@ -129,6 +133,12 @@ type SuccessSaleSummary = {
     taxId?: string;
     address?: string;
   };
+  separatedInfo?: {
+    initialPayment: number;
+    balance: number;
+    dueDate?: string | null;
+    initialMethod?: string;
+  };
 };
 
 const QUICK_ACTIONS = [
@@ -147,7 +157,12 @@ const DEFAULT_GRID_ZOOM = 1;
 const MIN_GRID_ZOOM = 0.68;
 const MAX_GRID_ZOOM = 1;
 const REQUIRE_FREE_SALE_REASON = true;
+const REQUIRED_REASON_MIN_LENGTH = 3;
 const FREE_SALE_NAME_MATCH = 'venta libre';
+const REQUIRED_REASON_LABELS_BY_SKU: Record<string, string> = {
+  '138': 'Motivo servicio tecnico',
+  '1087': 'Motivo abono de saldo',
+};
 
 const SURCHARGE_PRESET_RATES: Record<Exclude<SurchargeMethod, null>, number> = {
   addi: 0.1,
@@ -221,12 +236,51 @@ function slugifyMethodKey(value?: string | null): string {
 }
 
 function isFreeSaleProduct(product: CatalogProduct): boolean {
+  const normalizedSku = slugifyMethodKey(product.sku);
+  if (REQUIRED_REASON_LABELS_BY_SKU[normalizedSku]) {
+    return true;
+  }
   const normalizedName = slugifyMethodKey(product.name);
   if (normalizedName === slugifyMethodKey(FREE_SALE_NAME_MATCH) || normalizedName.includes(slugifyMethodKey(FREE_SALE_NAME_MATCH))) {
     return true;
   }
-  const normalizedSku = slugifyMethodKey(product.sku);
   return normalizedSku.includes('venta-libre');
+}
+
+function getRequiredReasonLabel(product: CatalogProduct): string {
+  const normalizedSku = slugifyMethodKey(product.sku);
+  return REQUIRED_REASON_LABELS_BY_SKU[normalizedSku] ?? 'Motivo venta libre';
+}
+
+function getRequiredReasonProductLabel(product: CatalogProduct): string {
+  const reasonLabel = getRequiredReasonLabel(product);
+  return reasonLabel.replace(/^Motivo\s+/i, '');
+}
+
+function isCustomerEligibleForSeparated(customer?: PosCustomerRecord | null): boolean {
+  if (!customer?.id || !customer.name?.trim()) {
+    return false;
+  }
+  return [customer.phone, customer.email, customer.tax_id, customer.address].some(
+    (value) => Boolean(value?.trim()),
+  );
+}
+
+function getDefaultSeparatedDueDate(): string {
+  const dueDate = new Date();
+  dueDate.setMonth(dueDate.getMonth() + 2);
+  return dueDate.toISOString();
+}
+
+function formatSeparatedDueDate(value?: string | null): string {
+  if (!value) return 'Sin fecha límite';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString('es-CO', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
 }
 
 function roundUpToThousand(value: number): number {
@@ -434,6 +488,7 @@ export function HomeScreen() {
   >('idle');
   const printRequestInFlightRef = useRef(false);
   const ticketPrintRequestRef = useRef<{ saleId: number; requestId: string } | null>(null);
+  const saleAttemptRef = useRef<{ reservationId: number; requestId: string } | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<PosCustomerRecord | null>(null);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [customerMode, setCustomerMode] = useState<'list' | 'new'>('list');
@@ -1383,12 +1438,19 @@ export function HomeScreen() {
     () => cartTotalBeforeSurcharge + (cartSurcharge.enabled ? cartSurcharge.amount : 0),
     [cartSurcharge.amount, cartSurcharge.enabled, cartTotalBeforeSurcharge],
   );
-  const freeSaleReasons = useMemo(
-    () =>
-      cart
-        .filter((item) => isFreeSaleProduct(item.product))
-        .map((item) => item.freeSaleReason?.trim() ?? '')
-        .filter((reason) => reason.length > 0),
+  const requiredReasonsByLabel = useMemo(
+    () => {
+      const grouped: Record<string, string[]> = {};
+      cart.forEach((item) => {
+        if (!isFreeSaleProduct(item.product)) return;
+        const reason = item.freeSaleReason?.trim() ?? '';
+        if (!reason) return;
+        const label = getRequiredReasonLabel(item.product);
+        if (!grouped[label]) grouped[label] = [];
+        grouped[label].push(reason);
+      });
+      return grouped;
+    },
     [cart],
   );
   const missingFreeSaleReason = useMemo(
@@ -1432,6 +1494,10 @@ export function HomeScreen() {
   const paymentMultipleDiff = useMemo(() => paymentMultipleTotal - cartTotal, [paymentMultipleTotal, cartTotal]);
   const paymentMultipleChange = useMemo(() => Math.max(0, paymentMultipleDiff), [paymentMultipleDiff]);
   const paymentMultipleRemaining = useMemo(() => Math.max(0, -paymentMultipleDiff), [paymentMultipleDiff]);
+  const paymentMultipleIsSeparated = useMemo(
+    () => paymentLines.length > 0 && paymentLines.every((line) => line.method === 'separado'),
+    [paymentLines],
+  );
   const paymentMultipleBadgeLabel = useMemo(() => {
     if (paymentMultipleDiff > 0) {
       return 'Cambio';
@@ -1488,8 +1554,11 @@ export function HomeScreen() {
     return false;
   }, [allowsChange, cartTotal, paymentSinglePaid, paymentSubmitting]);
   const paymentMultipleConfirmDisabled = useMemo(
-    () => paymentSubmitting || paymentMultipleTotal <= 0 || paymentMultipleRemaining > 0,
-    [paymentMultipleRemaining, paymentMultipleTotal, paymentSubmitting],
+    () =>
+      paymentSubmitting ||
+      paymentMultipleTotal <= 0 ||
+      (!paymentMultipleIsSeparated && paymentMultipleRemaining > 0),
+    [paymentMultipleIsSeparated, paymentMultipleRemaining, paymentMultipleTotal, paymentSubmitting],
   );
 
   useEffect(() => {
@@ -1590,6 +1659,14 @@ export function HomeScreen() {
 
     if (!product) {
       showActionToast(`No se encontraron productos con el código: ${rawCode.trim()}`, 2600, 'error');
+      return;
+    }
+
+    if (REQUIRE_FREE_SALE_REASON && isFreeSaleProduct(product)) {
+      setFreeSaleReasonTargetCartId(null);
+      setFreeSaleReasonProduct(product);
+      setFreeSaleReasonValue('');
+      setFreeSaleReasonModalOpen(true);
       return;
     }
 
@@ -1929,7 +2006,12 @@ export function HomeScreen() {
 
   const handleApplyFreeSaleReason = useCallback(() => {
     const reason = freeSaleReasonValue.trim();
-    if (!reason) {
+    if (reason.length < REQUIRED_REASON_MIN_LENGTH) {
+      showActionToast(
+        `El motivo debe tener al menos ${REQUIRED_REASON_MIN_LENGTH} caracteres.`,
+        2600,
+        'error',
+      );
       return;
     }
     if (freeSaleReasonTargetCartId) {
@@ -1973,7 +2055,7 @@ export function HomeScreen() {
     setFreeSaleReasonProduct(null);
     setFreeSaleReasonValue('');
     setPendingFreeSaleReason(null);
-  }, [addProductToCart, freeSaleReasonProduct, freeSaleReasonTargetCartId, freeSaleReasonValue]);
+  }, [addProductToCart, freeSaleReasonProduct, freeSaleReasonTargetCartId, freeSaleReasonValue, showActionToast]);
 
   const handlePriceChangeInput = useCallback((value: string) => {
     const formatted = formatPriceInputValue(value);
@@ -2164,8 +2246,9 @@ export function HomeScreen() {
         setFreeSaleReasonValue(pending.freeSaleReason ?? '');
         setFreeSaleReasonModalOpen(true);
       }
-      setPaymentError('Debes registrar el motivo de venta libre antes de continuar.');
-      showActionToast('Debes registrar el motivo de venta libre antes de continuar.', 2600, 'error');
+      const productLabel = pending ? getRequiredReasonProductLabel(pending.product) : 'este producto';
+      setPaymentError(`Debes registrar el motivo de ${productLabel} antes de continuar.`);
+      showActionToast(`Debes registrar el motivo de ${productLabel} antes de continuar.`, 2600, 'error');
       return;
     }
 
@@ -2201,6 +2284,7 @@ export function HomeScreen() {
     await releaseReservation(reservedSaleId);
     setReservedSaleId(null);
     setReservedSaleNumber(null);
+    saleAttemptRef.current = null;
     try {
       await refreshNextSaleNumber();
     } catch {
@@ -2221,8 +2305,10 @@ export function HomeScreen() {
       let paidAmount = 0;
       let changeAmount = 0;
       let primaryMethod = paymentMethod;
+      let isSeparatedSale = false;
 
       if (paymentView === 'single') {
+        isSeparatedSale = paymentMethod === 'separado';
         if (paymentMethod === 'separado' && !separatedPaymentMethod) {
           setPaymentError('Selecciona el método del abono inicial.');
           return;
@@ -2263,7 +2349,7 @@ export function HomeScreen() {
           setPaymentError('Crédito y separado no se pueden mezclar con otros métodos por ahora.');
           return;
         }
-        const isSeparatedSale = paymentLines.length > 0 && paymentLines.every((line) => line.method === 'separado');
+        isSeparatedSale = paymentLines.length > 0 && paymentLines.every((line) => line.method === 'separado');
         if (isSeparatedSale && paymentLines.some((line) => !line.separatedRealMethod)) {
           setPaymentError('Selecciona el método real para cada línea de separado.');
           return;
@@ -2282,30 +2368,68 @@ export function HomeScreen() {
           }));
       }
 
+      if (isSeparatedSale) {
+        if (!selectedCustomer) {
+          setPaymentError('Debes asignar un cliente para crear el separado.');
+          return;
+        }
+        if (!isCustomerEligibleForSeparated(selectedCustomer)) {
+          setPaymentError(
+            'Completa al menos un dato adicional del cliente, preferiblemente el teléfono.',
+          );
+          return;
+        }
+        if (paidAmount <= 0) {
+          setPaymentError('El abono inicial debe ser mayor a cero.');
+          return;
+        }
+        if (paidAmount > cartTotal) {
+          setPaymentError('El abono inicial no puede superar el total del separado.');
+          return;
+        }
+        changeAmount = 0;
+      }
+
       let reservation = await ensureSaleReservation();
+      const priorAttempt = saleAttemptRef.current;
+      const clientRequestId =
+        priorAttempt?.reservationId === reservation.reservationId
+          ? priorAttempt.requestId
+          : `tablet_sale_${reservation.reservationId}_${Date.now()}`;
+      saleAttemptRef.current = {
+        reservationId: reservation.reservationId,
+        requestId: clientRequestId,
+      };
       const combinedSaleNotes = (() => {
         const extra = saleNotes.trim();
         const blocks: string[] = [];
-        if (REQUIRE_FREE_SALE_REASON && freeSaleReasons.length > 0) {
-          const lines = freeSaleReasons.map((reason, index) => `${index + 1}. ${reason}`);
-          blocks.push(`Motivo venta libre:\n${lines.join('\n')}`);
+        if (REQUIRE_FREE_SALE_REASON) {
+          Object.entries(requiredReasonsByLabel).forEach(([label, reasons]) => {
+            if (!reasons.length) return;
+            const lines = reasons.map((reason, index) => `${index + 1}. ${reason}`);
+            blocks.push(`${label}:\n${lines.join('\n')}`);
+          });
         }
         if (extra) {
           blocks.push(extra);
         }
         return blocks.join('\n\n');
       })();
-      const buildPayload = (saleNumber: number, reservationId: number) => ({
+      const buildPayload = (saleNumber: number, reservationId: number): SaleCreatePayload => ({
         payment_method: primaryMethod,
         total: cartTotal,
         paid_amount: paidAmount,
         change_amount: changeAmount,
+        cart_discount_value: cartDiscountValue,
+        cart_discount_percent: cartDiscountPercent,
         sale_number_preassigned: saleNumber,
         reservation_id: reservationId,
         pos_name: resolvedPosName,
         vendor_name: user?.name ?? undefined,
         station_id: stationId.trim() || undefined,
         customer_id: selectedCustomer?.id,
+        due_date: isSeparatedSale ? getDefaultSeparatedDueDate() : undefined,
+        client_request_id: clientRequestId,
         payments: payloadPayments,
         notes: combinedSaleNotes || undefined,
         surcharge_amount: cartSurcharge.enabled && cartSurcharge.amount > 0 ? cartSurcharge.amount : undefined,
@@ -2329,11 +2453,26 @@ export function HomeScreen() {
         }),
       });
 
-      let sale: Awaited<ReturnType<typeof createSale>>;
+      const submitSale = (payload: SaleCreatePayload): Promise<SaleRead | SeparatedOrderRead> =>
+        isSeparatedSale
+          ? createSeparatedOrder(apiClient, payload)
+          : createSale(apiClient, payload);
+
+      let saleResult: SaleRead | SeparatedOrderRead;
       try {
-        sale = await createSale(apiClient, buildPayload(reservation.saleNumber, reservation.reservationId));
+        saleResult = await submitSale(buildPayload(reservation.saleNumber, reservation.reservationId));
       } catch (err) {
-        if (err instanceof ApiError && err.status === 409) {
+        const normalizedDetail =
+          err instanceof ApiError
+            ? (err.detail || err.message)
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+            : '';
+        const shouldRenewReservation =
+          err instanceof ApiError &&
+          (err.status === 409 || normalizedDetail.includes('la reserva de numero de venta no es valida'));
+        if (shouldRenewReservation) {
           await releaseReservation(reservation.reservationId);
           const next = await refreshNextSaleNumber();
           const retried = await reserveSaleNumber(apiClient, {
@@ -2347,27 +2486,38 @@ export function HomeScreen() {
             reservationId: retried.reservation_id,
             saleNumber: retried.sale_number,
           };
-          sale = await createSale(apiClient, buildPayload(reservation.saleNumber, reservation.reservationId));
+          saleAttemptRef.current = {
+            reservationId: reservation.reservationId,
+            requestId: clientRequestId,
+          };
+          saleResult = await submitSale(buildPayload(reservation.saleNumber, reservation.reservationId));
         } else {
           throw err;
         }
       }
 
-      const backendSaleNumber = sale.sale_number ?? reservation.saleNumber;
-      const documentNo = sale.document_number ?? `V-${sale.id.toString().padStart(6, '0')}`;
-      const saleWithSurcharge = sale as typeof sale & {
-        surcharge_amount?: number;
-        surcharge_label?: string;
-      };
+      const separatedOrder = isSeparatedSale ? saleResult as SeparatedOrderRead : null;
+      const regularSale = isSeparatedSale ? null : saleResult as SaleRead;
+      const saleId = separatedOrder?.sale_id ?? regularSale?.id;
+      if (!saleId) {
+        throw new Error('El servidor no devolvió el identificador de la venta.');
+      }
+      const backendSaleNumber =
+        separatedOrder?.sale_number ?? regularSale?.sale_number ?? reservation.saleNumber;
+      const documentNo =
+        separatedOrder?.sale_document_number ??
+        regularSale?.document_number ??
+        `V-${saleId.toString().padStart(6, '0')}`;
+      const saleWithSurcharge = separatedOrder ?? regularSale;
       const responseSurchargeAmount =
-        typeof saleWithSurcharge.surcharge_amount === 'number' && saleWithSurcharge.surcharge_amount > 0
+        typeof saleWithSurcharge?.surcharge_amount === 'number' && saleWithSurcharge.surcharge_amount > 0
           ? saleWithSurcharge.surcharge_amount
           : undefined;
       const summarySurchargeAmount =
         responseSurchargeAmount ??
         (cartSurcharge.enabled && cartSurcharge.amount > 0 ? cartSurcharge.amount : undefined);
       const summarySurchargeLabel =
-        saleWithSurcharge.surcharge_label ??
+        saleWithSurcharge?.surcharge_label ??
         (summarySurchargeAmount
           ? cartSurcharge.method
             ? `Incremento ${getSurchargeMethodLabel(cartSurcharge.method)}`
@@ -2381,7 +2531,7 @@ export function HomeScreen() {
       }));
 
       setSuccessSale({
-        saleId: sale.id,
+        saleId,
         documentNumber: documentNo,
         saleNumber: backendSaleNumber,
         total: cartTotal,
@@ -2415,6 +2565,14 @@ export function HomeScreen() {
               address: selectedCustomer.address ?? undefined,
             }
           : undefined,
+        separatedInfo: separatedOrder
+          ? {
+              initialPayment: separatedOrder.initial_payment,
+              balance: Math.max(0, separatedOrder.balance),
+              dueDate: separatedOrder.due_date,
+              initialMethod: paymentSummary[0]?.label,
+            }
+          : undefined,
       });
 
       setCart([]);
@@ -2438,6 +2596,7 @@ export function HomeScreen() {
       setSaleNotes('');
       setSaleNotice(null);
       setSelectedCustomer(null);
+      saleAttemptRef.current = null;
       await refreshNextSaleNumber();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -2464,7 +2623,7 @@ export function HomeScreen() {
     cartTotal,
     creditMethodSlugs,
     ensureSaleReservation,
-    freeSaleReasons,
+    requiredReasonsByLabel,
     isCreditLike,
     allowsChange,
     paymentLines,
@@ -2854,6 +3013,7 @@ export function HomeScreen() {
     return (
       <SalesHistoryScreen
         apiClient={apiClient}
+        stationId={stationId}
         paymentMethods={activePaymentMethods}
         onBack={() => {
           setHistoryPageOpen(false);
@@ -3005,7 +3165,9 @@ export function HomeScreen() {
                           <Text style={styles.cartItemDiscount}>Descuento -{formatMoney(item.lineDiscountValue)}</Text>
                         ) : null}
                         {item.freeSaleReason?.trim() ? (
-                          <Text style={styles.cartItemDiscount}>Motivo: {item.freeSaleReason.trim()}</Text>
+                          <Text style={styles.cartItemDiscount}>
+                            {getRequiredReasonLabel(item.product)}: {item.freeSaleReason.trim()}
+                          </Text>
                         ) : null}
                       </View>
                     </Pressable>
@@ -3790,10 +3952,23 @@ export function HomeScreen() {
           <View style={styles.successOverlay}>
             <View style={styles.successCard}>
               <View style={styles.successHeader}>
-                <Text style={styles.successKicker}>Venta registrada correctamente</Text>
-                <Text style={styles.successTitle}>Venta completada con éxito</Text>
+                <View style={styles.successCheckBadge}>
+                  <Text style={styles.successCheckBadgeText}>✓</Text>
+                </View>
+                <Text style={styles.successKicker}>
+                  {successSale.separatedInfo
+                    ? 'Separado registrado correctamente'
+                    : 'Venta registrada correctamente'}
+                </Text>
+                <Text style={styles.successTitle}>
+                  {successSale.separatedInfo
+                    ? '¡Venta separada registrada con éxito!'
+                    : '¡Venta completada con éxito!'}
+                </Text>
                 <Text style={styles.successSubtitle}>
-                  Selecciona cómo deseas entregar el recibo al cliente.
+                  {successSale.separatedInfo
+                    ? 'El abono inicial quedó aplicado. Entrega el comprobante al cliente.'
+                    : 'Selecciona cómo deseas entregar el recibo al cliente.'}
                 </Text>
               </View>
 
@@ -3803,6 +3978,11 @@ export function HomeScreen() {
                 showsVerticalScrollIndicator
               >
                 <View style={styles.successSummary}>
+                  {successSale.separatedInfo ? (
+                    <View style={styles.successSeparatedBadge}>
+                      <Text style={styles.successSeparatedBadgeText}>VENTA POR SEPARADO</Text>
+                    </View>
+                  ) : null}
                   <View style={styles.successRow}>
                     <Text style={styles.successLabel}>Documento</Text>
                     <Text style={styles.successValue}>{successSale.documentNumber}</Text>
@@ -3836,9 +4016,41 @@ export function HomeScreen() {
                     </View>
                   ) : null}
                   <View style={styles.successRow}>
-                    <Text style={styles.successLabel}>Total pagado</Text>
+                    <Text style={styles.successLabel}>
+                      {successSale.separatedInfo ? 'Valor del separado' : 'Total pagado'}
+                    </Text>
                     <Text style={styles.successValueTotal}>{formatMoney(successSale.total)}</Text>
                   </View>
+                  {successSale.separatedInfo ? (
+                    <View style={styles.successSeparatedDetails}>
+                      <View style={styles.successRow}>
+                        <Text style={styles.successLabelAccent}>Abono inicial</Text>
+                        <Text style={styles.successValueAccent}>
+                          {formatMoney(successSale.separatedInfo.initialPayment)}
+                        </Text>
+                      </View>
+                      {successSale.separatedInfo.initialMethod ? (
+                        <View style={styles.successRow}>
+                          <Text style={styles.successLabel}>Método del abono</Text>
+                          <Text style={styles.successValue}>
+                            {successSale.separatedInfo.initialMethod}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View style={styles.successRow}>
+                        <Text style={styles.successLabelWarn}>Saldo pendiente</Text>
+                        <Text style={styles.successValueWarn}>
+                          {formatMoney(successSale.separatedInfo.balance)}
+                        </Text>
+                      </View>
+                      <View style={styles.successRow}>
+                        <Text style={styles.successLabel}>Fecha límite</Text>
+                        <Text style={styles.successValue}>
+                          {formatSeparatedDueDate(successSale.separatedInfo.dueDate)}
+                        </Text>
+                      </View>
+                    </View>
+                  ) : null}
                   {successSale.showChange && successSale.changeAmount > 0 ? (
                     <View style={styles.successRow}>
                       <Text style={styles.successLabelWarn}>Cambio</Text>
@@ -3883,49 +4095,71 @@ export function HomeScreen() {
               </ScrollView>
 
               <View style={styles.successActions}>
-                <Pressable
-                  style={[
-                    styles.successActionMock,
-                    ticketPrintStatus === 'requesting' || ticketPrintStatus === 'queued'
-                      ? styles.successActionDisabled
-                      : null,
-                  ]}
-                  disabled={ticketPrintStatus === 'requesting' || ticketPrintStatus === 'queued'}
-                  onPress={() => {
-                    handleOpenSaleDocument('ticket').catch(() => undefined);
-                  }}
-                >
-                  <Text style={styles.successActionMockText}>
-                    {ticketPrintStatus === 'requesting'
-                      ? 'Enviando…'
-                      : ticketPrintStatus === 'queued'
-                        ? 'Ticket en cola'
-                        : ticketPrintStatus === 'accepted'
-                          ? 'Imprimir otra copia'
-                          : ticketPrintStatus === 'failed'
-                            ? 'Reintentar impresión'
-                            : 'Imprimir ticket'}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={styles.successActionMock}
-                  onPress={() => {
-                    handleSendSaleDocumentByEmail('ticket').catch(() => undefined);
-                  }}
-                >
-                  <Text style={styles.successActionMockText}>Enviar ticket</Text>
-                </Pressable>
-                <Pressable
-                  style={styles.successActionMock}
-                  onPress={() => {
-                    handleSendSaleDocumentByEmail('invoice').catch(() => undefined);
-                  }}
-                >
-                  <Text style={styles.successActionMockText}>Enviar factura</Text>
-                </Pressable>
-                <Pressable style={styles.successActionDone} onPress={handleSuccessDone}>
-                  <Text style={styles.successActionDoneText}>Hecho (volver al POS)</Text>
-                </Pressable>
+                <View style={styles.successDeliveryActions}>
+                  <Pressable
+                    style={[
+                      styles.successActionMock,
+                      styles.successPrintAction,
+                      ticketPrintStatus === 'accepted' ? styles.successPrintActionAccepted : null,
+                      ticketPrintStatus === 'failed' ? styles.successPrintActionFailed : null,
+                      ticketPrintStatus === 'requesting' || ticketPrintStatus === 'queued'
+                        ? styles.successActionDisabled
+                        : null,
+                    ]}
+                    disabled={ticketPrintStatus === 'requesting' || ticketPrintStatus === 'queued'}
+                    onPress={() => {
+                      handleOpenSaleDocument('ticket').catch(() => undefined);
+                    }}
+                  >
+                    <Text style={styles.successPrintIcon}>🖨️</Text>
+                    <Text style={styles.successPrintActionText}>
+                      {ticketPrintStatus === 'requesting'
+                        ? 'Enviando…'
+                        : ticketPrintStatus === 'queued'
+                          ? 'Ticket en cola'
+                          : ticketPrintStatus === 'accepted'
+                            ? 'Imprimir otra copia'
+                            : ticketPrintStatus === 'failed'
+                              ? 'Reintentar impresión'
+                              : 'Imprimir ticket'}
+                    </Text>
+                    <Text style={styles.successPrintHint}>
+                      {ticketPrintStatus === 'accepted'
+                        ? 'La siguiente pulsación imprimirá una copia nueva'
+                        : ticketPrintStatus === 'failed'
+                          ? 'No se pudo enviar. Pulsa para intentarlo de nuevo'
+                          : 'Enviar a la impresora de caja'}
+                    </Text>
+                  </Pressable>
+
+                  <View style={styles.successSecondaryActions}>
+                    <Pressable
+                      style={[styles.successActionMock, styles.successSecondaryAction]}
+                      onPress={() => {
+                        handleSendSaleDocumentByEmail('ticket').catch(() => undefined);
+                      }}
+                    >
+                      <Text style={styles.successSecondaryIcon}>✉️</Text>
+                      <Text style={styles.successActionMockText}>Enviar ticket</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.successActionMock, styles.successSecondaryAction]}
+                      onPress={() => {
+                        handleSendSaleDocumentByEmail('invoice').catch(() => undefined);
+                      }}
+                    >
+                      <Text style={styles.successSecondaryIcon}>✉️</Text>
+                      <Text style={styles.successActionMockText}>Enviar factura</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                <View style={styles.successDoneRow}>
+                  <Pressable style={styles.successActionDone} onPress={handleSuccessDone}>
+                    <Text style={styles.successDoneIcon}>✓</Text>
+                    <Text style={styles.successActionDoneText}>Hecho (volver al POS)</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </View>
@@ -3943,8 +4177,9 @@ export function HomeScreen() {
                 quantity: item.quantity,
                 unitPrice: item.unitPrice,
                 lineDiscountValue: item.lineDiscountValue,
-                lineTotal: calcLineTotal(item),
-                freeSaleReason: item.freeSaleReason,
+                  lineTotal: calcLineTotal(item),
+                  freeSaleReason: item.freeSaleReason,
+                  reasonLabel: getRequiredReasonLabel(item.product),
               }))}
               cartGrossSubtotal={cartGrossSubtotal}
               cartLineDiscountTotal={cartLineDiscountTotal}
@@ -3962,6 +4197,7 @@ export function HomeScreen() {
                       phone: selectedCustomer.phone ?? null,
                       email: selectedCustomer.email ?? null,
                       taxId: selectedCustomer.tax_id ?? null,
+                      address: selectedCustomer.address ?? null,
                     }
                   : null
               }
@@ -4121,13 +4357,18 @@ export function HomeScreen() {
                   style={[styles.modalTitleText, modalCompact ? styles.modalTitleTextCompact : null]}
                   numberOfLines={2}
                 >
-                  Motivo venta libre
+                  Motivo obligatorio
                 </Text>
               </View>
               {freeSaleReasonProduct ? (
-                <Text style={styles.modalSubtitleText} numberOfLines={2}>
-                  {freeSaleReasonProduct.name}
-                </Text>
+                <>
+                  <Text style={styles.modalSubtitleText} numberOfLines={1}>
+                    {getRequiredReasonProductLabel(freeSaleReasonProduct)}
+                  </Text>
+                  <Text style={styles.modalSubtitleText} numberOfLines={2}>
+                    {freeSaleReasonProduct.name}
+                  </Text>
+                </>
               ) : null}
               <View style={[styles.discountInputWrap, modalCompact ? styles.discountInputWrapCompact : null]}>
                 <TextInput
@@ -5454,11 +5695,32 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   successHeader: {
+    alignItems: 'center',
     paddingHorizontal: 26,
-    paddingTop: 24,
+    paddingTop: 18,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#193253',
+  },
+  successCheckBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#19d295',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+    shadowColor: '#19d295',
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  successCheckBadgeText: {
+    color: '#032030',
+    fontSize: 27,
+    fontWeight: '900',
+    lineHeight: 31,
   },
   successKicker: {
     color: '#19d295',
@@ -5497,6 +5759,28 @@ const styles = StyleSheet.create({
     backgroundColor: '#0a1a36',
     paddingHorizontal: 16,
     paddingVertical: 14,
+    gap: 8,
+  },
+  successSeparatedBadge: {
+    alignSelf: 'center',
+    borderWidth: 2,
+    borderColor: '#19d295',
+    borderRadius: 999,
+    backgroundColor: '#0d3140',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    marginBottom: 4,
+  },
+  successSeparatedBadgeText: {
+    color: '#67e8b2',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.1,
+  },
+  successSeparatedDetails: {
+    borderTopWidth: 1,
+    borderTopColor: '#1f3556',
+    paddingTop: 10,
     gap: 8,
   },
   successRow: {
@@ -5565,6 +5849,14 @@ const styles = StyleSheet.create({
     borderTopColor: '#193253',
     paddingHorizontal: 22,
     paddingVertical: 14,
+    gap: 12,
+  },
+  successDeliveryActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  successSecondaryActions: {
+    flex: 1,
     gap: 10,
   },
   successActionMock: {
@@ -5577,6 +5869,47 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 12,
   },
+  successPrintAction: {
+    flex: 1,
+    minHeight: 158,
+    borderColor: '#4e6b98',
+    backgroundColor: '#172b4c',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+  },
+  successPrintActionAccepted: {
+    borderColor: '#19d295',
+    backgroundColor: '#0d3140',
+  },
+  successPrintActionFailed: {
+    borderColor: '#fb7185',
+    backgroundColor: '#3a1e35',
+  },
+  successPrintIcon: {
+    fontSize: 34,
+    marginBottom: 8,
+  },
+  successPrintActionText: {
+    color: '#f8fbff',
+    fontSize: 18,
+    fontWeight: '900',
+    textAlign: 'center',
+  },
+  successPrintHint: {
+    color: '#a9bddb',
+    fontSize: 12,
+    lineHeight: 16,
+    textAlign: 'center',
+    marginTop: 7,
+  },
+  successSecondaryAction: {
+    flex: 1,
+    minHeight: 74,
+  },
+  successSecondaryIcon: {
+    fontSize: 23,
+    marginBottom: 4,
+  },
   successActionMockText: {
     color: '#e6f0ff',
     fontSize: 15,
@@ -5585,13 +5918,25 @@ const styles = StyleSheet.create({
   successActionDisabled: {
     opacity: 0.55,
   },
+  successDoneRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
   successActionDone: {
     minHeight: 56,
+    minWidth: 310,
     borderRadius: 12,
     backgroundColor: '#19d295',
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 14,
+  },
+  successDoneIcon: {
+    color: '#032030',
+    fontSize: 20,
+    fontWeight: '900',
+    marginRight: 8,
   },
   successActionDoneText: {
     color: '#032030',
