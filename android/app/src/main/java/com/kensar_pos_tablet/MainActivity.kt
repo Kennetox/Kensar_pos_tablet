@@ -10,9 +10,19 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 class MainActivity : ReactActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
-    // Force landscape regardless of device auto-rotate setting.
-    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+    // Allow either horizontal side, but never portrait, regardless of the
+    // device's auto-rotate setting.
+    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
     super.onCreate(savedInstanceState)
+  }
+
+  override fun onResume() {
+    super.onResume()
+    // Some tablet/OEM compatibility modes can reset the request while the app
+    // is backgrounded. Reassert it when the POS becomes active again.
+    if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE) {
+      requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    }
   }
 
   /**
