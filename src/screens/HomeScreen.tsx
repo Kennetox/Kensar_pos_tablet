@@ -60,6 +60,7 @@ import {
   fetchPosCustomers,
   type PosCustomerRecord,
 } from '../services/api/customers';
+import { getDefaultSeparatedDueDate } from '../utils/separatedDueDate';
 
 type Path = string[];
 
@@ -264,12 +265,6 @@ function isCustomerEligibleForSeparated(customer?: PosCustomerRecord | null): bo
   return [customer.phone, customer.email, customer.tax_id, customer.address].some(
     (value) => Boolean(value?.trim()),
   );
-}
-
-function getDefaultSeparatedDueDate(): string {
-  const dueDate = new Date();
-  dueDate.setMonth(dueDate.getMonth() + 2);
-  return dueDate.toISOString();
 }
 
 function formatSeparatedDueDate(value?: string | null): string {
