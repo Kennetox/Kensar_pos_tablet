@@ -348,6 +348,7 @@ function getPaymentBlockedReason(params: {
   paymentSinglePaid: number;
   paymentMultipleTotal: number;
   paymentMultipleRemaining: number;
+  paymentMultipleIsSeparated: boolean;
 }): string | null {
   const {
     paymentSubmitting,
@@ -357,6 +358,7 @@ function getPaymentBlockedReason(params: {
     paymentSinglePaid,
     paymentMultipleTotal,
     paymentMultipleRemaining,
+    paymentMultipleIsSeparated,
   } = params;
   if (paymentSubmitting) {
     return 'Estamos procesando una operación. Intenta nuevamente en unos segundos.';
@@ -373,7 +375,10 @@ function getPaymentBlockedReason(params: {
   if (paymentMultipleTotal <= 0) {
     return 'Agrega montos en las líneas de pago para continuar.';
   }
-  if (paymentMultipleRemaining > 0) {
+  if (paymentMultipleIsSeparated && paymentMultipleTotal > cartTotal) {
+    return 'El abono inicial no puede superar el total del separado.';
+  }
+  if (!paymentMultipleIsSeparated && paymentMultipleRemaining > 0) {
     return `Faltan ${formatMoney(paymentMultipleRemaining)} para completar el pago.`;
   }
   return null;
@@ -1274,6 +1279,8 @@ export function HomeScreen() {
     const tileHeight = Math.max(112, Math.min(baseHeight, scaledHeight));
     const imageHeight = Math.max(42, Math.round(Math.min(tileHeight * 0.46, tileWidth * 0.48)));
     const labelFontSize = tileHeight < 126 ? 12 : tileHeight < 144 ? 13 : 16;
+    const productLabelFontSize = tileHeight < 126 ? 11 : tileHeight < 144 ? 12 : 14;
+    const skuFontSize = tileHeight < 126 ? 11 : tileHeight < 144 ? 12 : 13;
     const priceFontSize = tileHeight < 126 ? 11 : tileHeight < 144 ? 12 : 14;
     const tilePadding = Math.max(10, Math.round(tileHeight * 0.1));
     const imageWidth = Math.max(76, Math.round(tileWidth * 0.62));
@@ -1286,6 +1293,8 @@ export function HomeScreen() {
       imageHeight,
       imageWidth,
       labelFontSize,
+      productLabelFontSize,
+      skuFontSize,
       priceFontSize,
       tilePadding,
     };
@@ -1499,6 +1508,15 @@ export function HomeScreen() {
     [paymentLines],
   );
   const paymentMultipleBadgeLabel = useMemo(() => {
+    if (paymentMultipleIsSeparated) {
+      if (paymentMultipleTotal > cartTotal) {
+        return 'Exceso';
+      }
+      if (paymentMultipleTotal === cartTotal) {
+        return 'Listo';
+      }
+      return 'Saldo pendiente';
+    }
     if (paymentMultipleDiff > 0) {
       return 'Cambio';
     }
@@ -1506,10 +1524,15 @@ export function HomeScreen() {
       return 'Listo';
     }
     return 'Restante';
-  }, [paymentMultipleDiff]);
+  }, [cartTotal, paymentMultipleDiff, paymentMultipleIsSeparated, paymentMultipleTotal]);
   const paymentMultipleBadgeAmount = useMemo(
-    () => (paymentMultipleDiff > 0 ? paymentMultipleDiff : Math.abs(paymentMultipleDiff)),
-    [paymentMultipleDiff],
+    () => {
+      if (paymentMultipleIsSeparated) {
+        return Math.abs(cartTotal - paymentMultipleTotal);
+      }
+      return paymentMultipleDiff > 0 ? paymentMultipleDiff : Math.abs(paymentMultipleDiff);
+    },
+    [cartTotal, paymentMultipleDiff, paymentMultipleIsSeparated, paymentMultipleTotal],
   );
   const paymentSinglePaid = useMemo(() => {
     if (isCreditLike) {
@@ -1557,8 +1580,9 @@ export function HomeScreen() {
     () =>
       paymentSubmitting ||
       paymentMultipleTotal <= 0 ||
+      (paymentMultipleIsSeparated && paymentMultipleTotal > cartTotal) ||
       (!paymentMultipleIsSeparated && paymentMultipleRemaining > 0),
-    [paymentMultipleIsSeparated, paymentMultipleRemaining, paymentMultipleTotal, paymentSubmitting],
+    [cartTotal, paymentMultipleIsSeparated, paymentMultipleRemaining, paymentMultipleTotal, paymentSubmitting],
   );
 
   useEffect(() => {
@@ -2125,18 +2149,64 @@ export function HomeScreen() {
 
   const handleAddPaymentLine = useCallback((method: string) => {
     setPaymentLines((current) => {
+      const nextId = Date.now() + current.length;
+      const hasSeparatedLines = current.some((line) => line.method === 'separado');
+      const hasRegularLines = current.some((line) => line.method !== 'separado');
+      const canSwitchSingleLine = current.length === 1;
+
+      if (method === 'separado') {
+        if (hasRegularLines) {
+          if (!canSwitchSingleLine) {
+            setPaymentError('Para crear un separado, elimina las líneas de pago normales y agrega líneas de abono inicial.');
+            return current;
+          }
+          const line: PaymentLine = { id: nextId, method, amount: current[0].amount, separatedRealMethod: null };
+          setPaymentError(null);
+          setSelectedPaymentLineId(line.id);
+          setPaymentLineInput(formatPriceInputValue(String(Math.max(0, Math.round(line.amount)))) || '0');
+          return [line];
+        }
+        const line: PaymentLine = { id: nextId, method, amount: 0, separatedRealMethod: null };
+        setPaymentError(null);
+        setSelectedPaymentLineId(line.id);
+        setPaymentLineInput('0');
+        return [...current, line];
+      }
+
+      if (hasSeparatedLines) {
+        const canUseAsSeparatedRealMethod = separatedMethodOptions.some((option) => option.slug === method);
+        if (!canUseAsSeparatedRealMethod) {
+          setPaymentError('Ese método no se puede usar como método real del abono inicial.');
+          return current;
+        }
+        const selectedLine = current.find((line) => line.id === selectedPaymentLineId);
+        if (selectedLine?.method === 'separado' && selectedLine.amount <= 0 && !selectedLine.separatedRealMethod) {
+          setPaymentError(null);
+          setPaymentLineInput('0');
+          return current.map((line) =>
+            line.id === selectedLine.id ? { ...line, separatedRealMethod: method } : line,
+          );
+        }
+        const line: PaymentLine = { id: nextId, method: 'separado', amount: 0, separatedRealMethod: method };
+        setPaymentError(null);
+        setSelectedPaymentLineId(line.id);
+        setPaymentLineInput('0');
+        return [...current, line];
+      }
+
       const existing = current.find((line) => line.method === method);
       if (existing) {
         setSelectedPaymentLineId(existing.id);
         setPaymentLineInput(formatPriceInputValue(String(Math.max(0, Math.round(existing.amount)))) || '0');
         return current;
       }
-      const line: PaymentLine = { id: Date.now(), method, amount: 0, separatedRealMethod: null };
+      const line: PaymentLine = { id: nextId, method, amount: 0, separatedRealMethod: null };
+      setPaymentError(null);
       setSelectedPaymentLineId(line.id);
       setPaymentLineInput('0');
       return [...current, line];
     });
-  }, []);
+  }, [selectedPaymentLineId, separatedMethodOptions]);
 
   const handleSelectPaymentLine = useCallback((lineId: number) => {
     const line = paymentLines.find((entry) => entry.id === lineId);
@@ -2219,6 +2289,36 @@ export function HomeScreen() {
     setPaymentView('single');
     setPaymentError(null);
   }, []);
+
+  const handleSelectSeparatedPaymentMethod = useCallback((slug: string) => {
+    if (
+      paymentView === 'single' &&
+      paymentMethod === 'separado' &&
+      separatedPaymentMethod &&
+      separatedPaymentMethod !== slug &&
+      paymentSinglePaid > 0
+    ) {
+      const firstLine: PaymentLine = {
+        id: Date.now(),
+        method: 'separado',
+        amount: paymentSinglePaid,
+        separatedRealMethod: separatedPaymentMethod,
+      };
+      const secondLine: PaymentLine = {
+        id: firstLine.id + 1,
+        method: 'separado',
+        amount: 0,
+        separatedRealMethod: slug,
+      };
+      setPaymentView('multiple');
+      setPaymentError(null);
+      setPaymentLines([firstLine, secondLine]);
+      setSelectedPaymentLineId(secondLine.id);
+      setPaymentLineInput('0');
+      return;
+    }
+    setSeparatedPaymentMethod(slug);
+  }, [paymentMethod, paymentSinglePaid, paymentView, separatedPaymentMethod]);
 
   const handleSetSeparatedMethodForLine = useCallback((lineId: number, slug: string) => {
     setPaymentLines((current) =>
@@ -2333,39 +2433,59 @@ export function HomeScreen() {
           setPaymentError('Agrega al menos una linea de pago.');
           return;
         }
+        const zeroAmountLine = paymentLines.find((line) => line.amount <= 0);
+        if (zeroAmountLine) {
+          const baseMethodLabel =
+            activePaymentMethods.find((method) => method.slug === zeroAmountLine.method)?.name ??
+            zeroAmountLine.method;
+          const realMethodLabel = zeroAmountLine.separatedRealMethod
+            ? activePaymentMethods.find((method) => method.slug === zeroAmountLine.separatedRealMethod)?.name ??
+              zeroAmountLine.separatedRealMethod
+            : null;
+          const lineLabel =
+            zeroAmountLine.method === 'separado'
+              ? realMethodLabel
+                ? `abono inicial en ${realMethodLabel}`
+                : 'abono inicial separado'
+              : baseMethodLabel;
+          const message = `La línea de ${lineLabel} está en $0. Ingresa el monto o elimina esa línea antes de confirmar.`;
+          setPaymentError(message);
+          showActionToast(message, 3200, 'error');
+          return;
+        }
         paidAmount = paymentMultipleTotal;
         changeAmount = paymentMultipleChange;
         primaryMethod = paymentLines[0]?.method ?? 'cash';
 
         if (paidAmount <= 0) {
-          setPaymentError('El total pagado debe ser mayor a cero.');
+          setPaymentError('Ingresa un monto mayor a cero en al menos una línea de pago.');
           return;
         }
-        const hasCreditLikeInLines = paymentLines.some((line) => creditMethodSlugs.has(line.method));
-        if (
-          hasCreditLikeInLines &&
-          paymentLines.some((line) => !creditMethodSlugs.has(line.method))
-        ) {
-          setPaymentError('Crédito y separado no se pueden mezclar con otros métodos por ahora.');
-          return;
-        }
+        const hasSeparatedLines = paymentLines.some((line) => line.method === 'separado');
+        const hasCreditLines = paymentLines.some((line) => line.method === 'credito');
         isSeparatedSale = paymentLines.length > 0 && paymentLines.every((line) => line.method === 'separado');
-        if (isSeparatedSale && paymentLines.some((line) => !line.separatedRealMethod)) {
-          setPaymentError('Selecciona el método real para cada línea de separado.');
+        if (hasSeparatedLines && !isSeparatedSale) {
+          setPaymentError('El separado no se mezcla con otros tipos de pago. Divide el abono agregando varias líneas de separado.');
           return;
         }
-        if (!hasCreditLikeInLines && paymentMultipleRemaining > 0) {
+        if (hasCreditLines && paymentLines.some((line) => line.method !== 'credito')) {
+          setPaymentError('Crédito no se puede mezclar con otros métodos por ahora.');
+          return;
+        }
+        if (isSeparatedSale && paymentLines.some((line) => !line.separatedRealMethod)) {
+          setPaymentError('Selecciona el método real para cada abono inicial con monto.');
+          return;
+        }
+        if (!isSeparatedSale && !hasCreditLines && paymentMultipleRemaining > 0) {
           setPaymentError('El total pagado no puede ser menor al total de la venta.');
           return;
         }
 
         changeAmount = isSeparatedSale ? 0 : Math.max(0, paidAmount - cartTotal);
-        payloadPayments = paymentLines
-          .filter((line) => line.amount > 0)
-          .map((line) => ({
-            method: line.method === 'separado' ? line.separatedRealMethod ?? line.method : line.method,
-            amount: line.amount,
-          }));
+        payloadPayments = paymentLines.map((line) => ({
+          method: line.method === 'separado' ? line.separatedRealMethod ?? line.method : line.method,
+          amount: line.amount,
+        }));
       }
 
       if (isSeparatedSale) {
@@ -2566,11 +2686,11 @@ export function HomeScreen() {
             }
           : undefined,
         separatedInfo: separatedOrder
-          ? {
+            ? {
               initialPayment: separatedOrder.initial_payment,
               balance: Math.max(0, separatedOrder.balance),
               dueDate: separatedOrder.due_date,
-              initialMethod: paymentSummary[0]?.label,
+              initialMethod: paymentSummary.length > 1 ? 'Pagos múltiples' : paymentSummary[0]?.label,
             }
           : undefined,
       });
@@ -2621,7 +2741,6 @@ export function HomeScreen() {
     cartSurcharge.method,
     cartSubtotal,
     cartTotal,
-    creditMethodSlugs,
     ensureSaleReservation,
     requiredReasonsByLabel,
     isCreditLike,
@@ -2641,6 +2760,7 @@ export function HomeScreen() {
     releaseReservation,
     resolvedPosName,
     selectedCustomer,
+    showActionToast,
     stationId,
     user?.name,
   ]);
@@ -2811,8 +2931,8 @@ export function HomeScreen() {
     }
 
     const product = tile.product;
-    const productImage = resolveAssetUrl(product.image_thumb_url ?? product.image_url);
     const tileStyle = product.tile_color ? { backgroundColor: product.tile_color } : null;
+    const productCode = product.sku?.trim() || product.barcode?.trim() || '';
 
     return (
       <Pressable
@@ -2829,26 +2949,34 @@ export function HomeScreen() {
         onPress={() => handleTilePress(tile)}
       >
         <View style={styles.productTileMain}>
-          {productImage ? (
-            <Image
-              source={{ uri: productImage }}
-              style={[
-                styles.tileImage,
-                {
-                  width: gridMetrics.imageWidth,
-                  height: gridMetrics.imageHeight,
-                },
-              ]}
-              resizeMode="contain"
-            />
-          ) : null}
           <Text
-            style={[styles.productTileLabel, { fontSize: gridMetrics.labelFontSize - 1 }]}
+            style={[
+              styles.productTileLabel,
+              {
+                fontSize: gridMetrics.productLabelFontSize,
+                lineHeight: gridMetrics.productLabelFontSize + 4,
+              },
+            ]}
             numberOfLines={2}
             ellipsizeMode="tail"
           >
             {product.name}
           </Text>
+          {productCode ? (
+            <Text
+              style={[
+                styles.productTileSku,
+                {
+                  fontSize: gridMetrics.skuFontSize,
+                  lineHeight: gridMetrics.skuFontSize + 3,
+                },
+              ]}
+              numberOfLines={1}
+              ellipsizeMode="middle"
+            >
+              {productCode}
+            </Text>
+          ) : null}
         </View>
         <View style={styles.productTileFooter}>
           <Text
@@ -2861,7 +2989,7 @@ export function HomeScreen() {
         </View>
       </Pressable>
     );
-  }, [gridMetrics, handleTilePress, resolveAssetUrl]);
+  }, [gridMetrics, handleTilePress]);
 
   const handleOpenSaleDocument = useCallback(
     async (documentType: 'ticket' | 'invoice') => {
@@ -3970,6 +4098,14 @@ export function HomeScreen() {
                     ? 'El abono inicial quedó aplicado. Entrega el comprobante al cliente.'
                     : 'Selecciona cómo deseas entregar el recibo al cliente.'}
                 </Text>
+                {!successSale.separatedInfo && successSale.showChange && successSale.changeAmount > 0 ? (
+                  <View style={styles.successChangeBanner}>
+                    <Text style={styles.successChangeLabel}>Cambio a entregar</Text>
+                    <Text style={styles.successChangeValue}>
+                      {formatMoney(successSale.changeAmount)}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
 
               <ScrollView
@@ -4234,6 +4370,7 @@ export function HomeScreen() {
                   paymentSinglePaid,
                   paymentMultipleTotal,
                   paymentMultipleRemaining,
+                  paymentMultipleIsSeparated,
                 });
                 if (reason) {
                   showActionToast(reason, 2600, 'error');
@@ -4242,7 +4379,7 @@ export function HomeScreen() {
               onGoMultiple={handleSetMultipleMode}
               onGoSingle={handleSetSingleMode}
               onSelectMethod={handleSelectPaymentMethod}
-              onSelectSeparatedMethod={setSeparatedPaymentMethod}
+              onSelectSeparatedMethod={handleSelectSeparatedPaymentMethod}
               onSelectLineSeparatedMethod={handleSetSeparatedMethodForLine}
               onChangeAmountInput={paymentView === 'single' ? handleSinglePaymentAmountChange : handlePaymentLineAmountChange}
               onChangeNotes={setSaleNotes}
@@ -5341,7 +5478,9 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
+    gap: 10,
+    paddingTop: 2,
   },
   productTileFooter: {
     width: '100%',
@@ -5379,6 +5518,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     textAlign: 'center',
     lineHeight: 17,
+    width: '100%',
+  },
+  productTileSku: {
+    color: '#c4d2e6',
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
     width: '100%',
   },
   productTilePrice: {
@@ -5742,6 +5888,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
     marginTop: 8,
+  },
+  successChangeBanner: {
+    marginTop: 14,
+    minWidth: 320,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#facc15',
+    backgroundColor: '#2f2608',
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  successChangeLabel: {
+    color: '#fde68a',
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+  },
+  successChangeValue: {
+    color: '#fffbeb',
+    fontSize: 30,
+    fontWeight: '900',
+    marginTop: 3,
   },
   successBody: {
     flex: 1,

@@ -31,6 +31,7 @@ export function LoginScreen() {
     stationLabel,
     tenantName,
     tabletEmail,
+    bindWithSetupCode,
     configureStation,
     clearStationConfig,
     loginWithPin,
@@ -45,11 +46,14 @@ export function LoginScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [stationEmail, setStationEmail] = useState(tabletEmail);
   const [stationPassword, setStationPassword] = useState('');
+  const [setupCode, setSetupCode] = useState('');
+  const [preferLegacyConfig, setPreferLegacyConfig] = useState(false);
   const [timeLabel, setTimeLabel] = useState('');
   const [refreshingSync, setRefreshingSync] = useState(false);
   const syncMeta = useMemo(() => getSyncMeta(syncStatus), [syncStatus]);
   const canUseApi = syncStatus === 'online' || syncStatus === 'degraded';
   const linkedCompanyName = tenantName.trim();
+  const showSetupCodeConfig = !hasStationConfig && !preferLegacyConfig;
 
   useEffect(() => {
     setStationEmail(tabletEmail);
@@ -166,6 +170,38 @@ export function LoginScreen() {
     }
   };
 
+  const handleBindWithSetupCode = async () => {
+    if (submitting) {
+      return;
+    }
+    if (!canUseApi) {
+      setError('Sin conexión con API. Revalida la conexión para continuar.');
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      await bindWithSetupCode(setupCode);
+      setSetupCode('');
+      setPreferLegacyConfig(false);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.detail || err.message);
+      } else if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError('No pudimos vincular la tablet.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSetupCodeChange = (value: string) => {
+    setSetupCode(value.replace(/\D/g, '').slice(0, 6));
+  };
+
   const handleRefreshSync = async () => {
     setRefreshingSync(true);
     try {
@@ -232,7 +268,7 @@ export function LoginScreen() {
           <Text style={styles.leftPanelBody}>
             {hasStationConfig
               ? `La caja ${stationLabel || 'activa'} ya quedó vinculada. Ingresa el PIN del vendedor para entrar al POS.`
-              : 'Configura una sola vez la estación con su correo y contraseña. Después de eso, cada vendedor entra con su PIN personal.'}
+              : 'Genera un código desde Configuración en Metrik, úsalo una sola vez y luego cada vendedor entra con su PIN personal.'}
           </Text>
           <Text style={styles.loginVersionText}>{APP_VERSION_LABEL}</Text>
         </View>
@@ -246,7 +282,9 @@ export function LoginScreen() {
             <Text style={styles.cardSubtitle}>
               {hasStationConfig
                 ? `Estacion: ${stationLabel || 'POS Tablet'}`
-                : 'Usa el correo y la contraseña definidos para la estacion.'}
+                : showSetupCodeConfig
+                  ? 'Ingresa el código generado para esta caja auxiliar.'
+                  : 'Usa el correo y la contraseña definidos para la estacion.'}
             </Text>
 
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -299,32 +337,75 @@ export function LoginScreen() {
               </>
             ) : (
               <>
-                <Field
-                  label="Correo de estacion"
-                  value={stationEmail}
-                  onChangeText={setStationEmail}
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  placeholder="caja1@kensar.com"
-                />
-                <Field
-                  label="Contraseña"
-                  value={stationPassword}
-                  onChangeText={setStationPassword}
-                  autoCapitalize="none"
-                  secureTextEntry
-                  placeholder="Minimo 6 caracteres"
-                />
+                {showSetupCodeConfig ? (
+                  <>
+                    <Field
+                      label="Código de vinculación"
+                      value={setupCode}
+                      onChangeText={handleSetupCodeChange}
+                      keyboardType="number-pad"
+                      placeholder="6 dígitos"
+                    />
+                    <Pressable
+                      style={[styles.primaryButton, !canUseApi ? styles.primaryButtonDisabled : null]}
+                      onPress={handleBindWithSetupCode}
+                      disabled={submitting || !canUseApi}
+                    >
+                      <Text style={styles.primaryButtonText}>
+                        {submitting ? 'Vinculando...' : 'Vincular tablet'}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.secondaryLinkButton}
+                      onPress={() => {
+                        setPreferLegacyConfig(true);
+                        setError(null);
+                      }}
+                      disabled={submitting}
+                    >
+                      <Text style={styles.secondaryLinkText}>Usar correo y contraseña</Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <>
+                    <Field
+                      label="Correo de estacion"
+                      value={stationEmail}
+                      onChangeText={setStationEmail}
+                      autoCapitalize="none"
+                      keyboardType="email-address"
+                      placeholder="caja1@kensar.com"
+                    />
+                    <Field
+                      label="Contraseña"
+                      value={stationPassword}
+                      onChangeText={setStationPassword}
+                      autoCapitalize="none"
+                      secureTextEntry
+                      placeholder="Minimo 6 caracteres"
+                    />
 
-                <Pressable
-                  style={[styles.primaryButton, !canUseApi ? styles.primaryButtonDisabled : null]}
-                  onPress={handleConfigureStation}
-                  disabled={submitting || !canUseApi}
-                >
-                  <Text style={styles.primaryButtonText}>
-                    {submitting ? 'Validando...' : 'Configurar estacion'}
-                  </Text>
-                </Pressable>
+                    <Pressable
+                      style={[styles.primaryButton, !canUseApi ? styles.primaryButtonDisabled : null]}
+                      onPress={handleConfigureStation}
+                      disabled={submitting || !canUseApi}
+                    >
+                      <Text style={styles.primaryButtonText}>
+                        {submitting ? 'Validando...' : 'Configurar estacion'}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.secondaryLinkButton}
+                      onPress={() => {
+                        setPreferLegacyConfig(false);
+                        setError(null);
+                      }}
+                      disabled={submitting}
+                    >
+                      <Text style={styles.secondaryLinkText}>Usar código de vinculación</Text>
+                    </Pressable>
+                  </>
+                )}
               </>
             )}
           </View>
@@ -367,7 +448,7 @@ function Field({
   value: string;
   onChangeText: (value: string) => void;
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
-  keyboardType?: 'default' | 'email-address';
+  keyboardType?: 'default' | 'email-address' | 'number-pad';
   secureTextEntry?: boolean;
   placeholder?: string;
   clearable?: boolean;
@@ -720,6 +801,16 @@ const styles = StyleSheet.create({
     color: '#05221a',
     fontSize: 17,
     fontWeight: '900',
+  },
+  secondaryLinkButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+  },
+  secondaryLinkText: {
+    color: '#dbeafe',
+    fontSize: 14,
+    fontWeight: '800',
   },
   fieldWrap: {
     marginBottom: 16,

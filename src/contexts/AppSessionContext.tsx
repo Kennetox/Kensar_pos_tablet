@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { AppState, Platform } from 'react-native';
 
-import { logoutSession, posStationLogin, tabletLogin } from '../services/api/auth';
+import { logoutSession, posStationBind, posStationLogin, tabletLogin } from '../services/api/auth';
 import { ApiError, createApiClient } from '../services/api/client';
 
 type AuthUser = {
@@ -39,6 +39,7 @@ type AppSessionValue = {
     stationEmail: string;
     stationPassword: string;
   }) => Promise<void>;
+  bindWithSetupCode: (setupCode: string) => Promise<void>;
   clearStationConfig: () => void;
   loginWithPin: (pin: string) => Promise<void>;
   logout: () => void;
@@ -252,12 +253,38 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       setTenantName(response.tenant_name?.trim() ?? '');
       setParentStationId(response.parent_station_id?.trim() ?? '');
       setParentStationLabel(response.parent_station_label?.trim() ?? '');
-      setTabletEmail(response.station_email);
+      setTabletEmail(response.station_email?.trim() ?? email);
       setToken(null);
       setTokenIssuedAt(null);
       setUser(null);
     },
     [apiClient, deviceLabel],
+  );
+
+  const bindWithSetupCode = useCallback(
+    async (setupCode: string) => {
+      const normalizedCode = setupCode.replace(/\D/g, '').trim();
+      if (!normalizedCode) {
+        throw new ApiError('Ingresa el código de vinculación.', 400);
+      }
+
+      const response = await posStationBind(apiClient, {
+        setup_code: normalizedCode,
+        device_id: deviceId,
+        device_label: deviceLabel,
+      });
+
+      setStationId(response.station_id);
+      setStationLabel(response.station_label);
+      setTenantName(response.tenant_name?.trim() ?? '');
+      setParentStationId(response.parent_station_id?.trim() ?? '');
+      setParentStationLabel(response.parent_station_label?.trim() ?? '');
+      setTabletEmail(response.station_email?.trim() ?? '');
+      setToken(null);
+      setTokenIssuedAt(null);
+      setUser(null);
+    },
+    [apiClient, deviceId, deviceLabel],
   );
 
   const clearStationConfig = useCallback(() => {
@@ -456,6 +483,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       deviceLabel,
       setApiBase,
       configureStation,
+      bindWithSetupCode,
       clearStationConfig,
       loginWithPin,
       logout,
@@ -465,6 +493,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
       apiBase,
       clearStationConfig,
       configureStation,
+      bindWithSetupCode,
       deviceId,
       deviceLabel,
       isHydrated,

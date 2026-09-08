@@ -141,6 +141,8 @@ export function PaymentPage({
 }: PaymentPageProps) {
   const insets = useSafeAreaInsets();
   const selectedLine = multipleLines.find((line) => line.id === selectedLineId) ?? multipleLines[0] ?? null;
+  const isMultipleSeparated =
+    mode === 'multiple' && multipleLines.length > 0 && multipleLines.every((line) => line.method === 'separado');
   const isSeparatedSelection =
     mode === 'single' ? selectedMethod === 'separado' : selectedLine?.method === 'separado';
   const separatedCustomerReady = Boolean(
@@ -265,10 +267,17 @@ export function PaymentPage({
             <Text style={styles.sectionTitle}>Tipo de pago</Text>
             <ScrollView style={styles.methodsList} contentContainerStyle={styles.methodsListContent}>
               {paymentMethods.map((method) => {
-                const inUse = mode === 'multiple' && multipleLines.some((line) => line.method === method.slug);
+                const inUse = mode === 'multiple' && (
+                  multipleLines.some((line) => line.method === method.slug) ||
+                  (isMultipleSeparated && multipleLines.some((line) => line.separatedRealMethod === method.slug))
+                );
                 const isSelected = mode === 'single'
                   ? selectedMethod === method.slug
-                  : selectedLine?.method === method.slug;
+                  : selectedLine?.method === 'separado'
+                    ? selectedLine.separatedRealMethod
+                      ? selectedLine.separatedRealMethod === method.slug
+                      : method.slug === 'separado'
+                    : selectedLine?.method === method.slug;
                 return (
                   <Pressable
                     key={method.id}
@@ -295,10 +304,14 @@ export function PaymentPage({
               contentContainerStyle={styles.paymentMainContent}
               showsVerticalScrollIndicator
             >
-            <Text style={styles.paymentTitle}>{mode === 'single' ? 'Pago' : 'Pago múltiple'}</Text>
+            <Text style={styles.paymentTitle}>
+              {mode === 'single' ? 'Pago' : isMultipleSeparated ? 'Abono inicial múltiple' : 'Pago múltiple'}
+            </Text>
             <Text style={styles.paymentSubtitle}>
               {mode === 'single'
                 ? 'Ajusta el monto recibido y agrega notas antes de confirmar.'
+                : isMultipleSeparated
+                ? 'Divide el abono inicial y asigna el método real de cada parte.'
                 : 'Ajusta cada línea y revisa el total antes de confirmar.'}
             </Text>
 
@@ -339,7 +352,10 @@ export function PaymentPage({
                 <Text
                   style={[
                     styles.badge,
-                    mode === 'multiple' && multipleDiff < 0 ? styles.badgeDanger : styles.badgeOk,
+                    mode === 'multiple' && (
+                      (!isMultipleSeparated && multipleDiff < 0) ||
+                      (isMultipleSeparated && multipleDiff > 0)
+                    ) ? styles.badgeDanger : styles.badgeOk,
                     mode === 'single' && displayChange < 0 ? styles.badgeDanger : null,
                   ]}
                 >
@@ -408,26 +424,40 @@ export function PaymentPage({
             {mode === 'multiple' ? (
               <View style={styles.card}>
                 <Text style={styles.cardLabel}>Líneas de pago</Text>
-                {multipleLines.map((line) => (
-                  <Pressable
-                    key={line.id}
-                    style={[styles.lineRow, line.id === selectedLineId ? styles.lineRowActive : null]}
-                    onPress={() => onSelectLine(line.id)}
-                  >
-                    <View>
-                      <Text style={styles.lineMethod}>{paymentMethods.find((method) => method.slug === line.method)?.name ?? line.method}</Text>
-                      <Text style={styles.lineHint}>Monto asignado</Text>
-                    </View>
-                    <View style={styles.lineRight}>
-                      <Text style={styles.lineAmount}>{formatMoney(line.amount)}</Text>
-                      {multipleLines.length > 1 ? (
-                        <Pressable style={styles.lineDelete} onPress={() => onDeleteLine(line.id)}>
-                          <Text style={styles.lineDeleteText}>×</Text>
-                        </Pressable>
-                      ) : null}
-                    </View>
-                  </Pressable>
-                ))}
+                {multipleLines.map((line) => {
+                  const methodLabel = paymentMethods.find((method) => method.slug === line.method)?.name ?? line.method;
+                  const realMethodLabel = line.separatedRealMethod
+                    ? paymentMethods.find((method) => method.slug === line.separatedRealMethod)?.name ?? line.separatedRealMethod
+                    : null;
+                  return (
+                    <Pressable
+                      key={line.id}
+                      style={[styles.lineRow, line.id === selectedLineId ? styles.lineRowActive : null]}
+                      onPress={() => onSelectLine(line.id)}
+                    >
+                      <View style={styles.lineInfo}>
+                        <Text style={styles.lineMethod}>
+                          {line.method === 'separado' ? 'Abono inicial' : methodLabel}
+                        </Text>
+                        <Text style={styles.lineHint}>
+                          {line.method === 'separado'
+                            ? realMethodLabel
+                              ? `Método real: ${realMethodLabel}`
+                              : 'Selecciona método real'
+                            : 'Monto asignado'}
+                        </Text>
+                      </View>
+                      <View style={styles.lineRight}>
+                        <Text style={styles.lineAmount}>{formatMoney(line.amount)}</Text>
+                        {multipleLines.length > 1 ? (
+                          <Pressable style={styles.lineDelete} onPress={() => onDeleteLine(line.id)}>
+                            <Text style={styles.lineDeleteText}>×</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </Pressable>
+                  );
+                })}
               </View>
             ) : null}
 
@@ -897,6 +927,11 @@ const styles = StyleSheet.create({
   lineRowActive: {
     backgroundColor: '#15315a',
     borderColor: '#4d6d9c',
+  },
+  lineInfo: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 10,
   },
   lineMethod: {
     color: '#f7fbff',

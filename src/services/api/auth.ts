@@ -18,6 +18,12 @@ export type PosStationLoginPayload = {
   device_label?: string;
 };
 
+export type PosStationBindPayload = {
+  setup_code: string;
+  device_id?: string;
+  device_label?: string;
+};
+
 export type LoginResponse = {
   access_token?: string;
   token?: string;
@@ -38,7 +44,7 @@ export type LoginResponse = {
 export type PosStationLoginResponse = {
   station_id: string;
   station_label: string;
-  station_email: string;
+  station_email?: string | null;
   tenant_name?: string | null;
   parent_station_id?: string | null;
   parent_station_label?: string | null;
@@ -63,6 +69,13 @@ export async function posStationLogin(
   payload: PosStationLoginPayload,
 ): Promise<PosStationLoginResponse> {
   return client.post<PosStationLoginResponse>('/auth/pos-station-login', payload);
+}
+
+export async function posStationBind(
+  client: ApiClient,
+  payload: PosStationBindPayload,
+): Promise<PosStationLoginResponse> {
+  return client.post<PosStationLoginResponse>('/auth/pos-station-bind', payload);
 }
 
 export async function logoutSession(client: ApiClient): Promise<void> {
